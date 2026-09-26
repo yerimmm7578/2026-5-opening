@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/32685661/README.md)
 # 🌻 우리반 칭찬릴레이 — "이 친구는 누구일까요?" (Vercel 배포판)
 
 React(Vite) 화면 + Vercel 서버 함수 + Upstash Redis(데이터 저장) + Gemini(AI 요약)로 구성되어 있습니다.

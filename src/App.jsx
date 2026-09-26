@@ -20,6 +20,7 @@ export default function App({ preview } = {}) {
   const lastJson = useRef('');      // 직전 데이터 (같으면 화면을 다시 그리지 않음)
   const actionVersion = useRef(0);  // 내가 방금 한 동작보다 오래된 조회 결과는 버리기 위한 표시
   const fetching = useRef(false);
+  const failCount = useRef(0);      // 연속 실패 횟수 (한 번 실패로 바로 배너를 띄우지 않기 위함)
 
   const showModal = useCallback((title, message, isError = false) => setModalState({ isOpen: true, title, message, isError }), []);
   const closeModal = () => setModalState({ isOpen: false, title: '', message: '', isError: false });
@@ -45,9 +46,12 @@ export default function App({ preview } = {}) {
     try {
       const data = await fetchState();
       if (actionVersion.current === startedAt) applyState(data);
+      failCount.current = 0;
       setConnError(false);
     } catch (e) {
-      setConnError(true);
+      // 한 번 실패했다고 바로 배너를 띄우지 않고, 연속으로 여러 번 실패할 때만 보여줍니다.
+      failCount.current += 1;
+      if (failCount.current >= 3) setConnError(true);
     } finally {
       fetching.current = false;
       setIsLoading(false);

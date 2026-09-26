@@ -69,7 +69,8 @@ export function TeacherView({ studentsList, broadcast, guessCount, comments, sho
   const [newStudent, setNewStudent] = useState({ grade: '5', classNum: '1', name: '', number: '' });
   const fileInputRef = useRef(null);
 
-  // 교사 전용 정보(학생별 칭찬 개수, 정답, 제출 인원)를 3초마다 확인
+  // 교사 전용 정보(학생별 칭찬 개수, 정답, 제출 인원)를 확인합니다.
+  // 저장소 요청을 아끼기 위해 [방송 제어] 탭을 보고 있을 때만 3초마다 확인해요.
   const [info, setInfo] = useState({ praiseCounts: {}, broadcast: null, guessCount: 0 });
   const refreshInfo = useCallback(async () => {
     if (document.hidden) return;
@@ -79,14 +80,15 @@ export function TeacherView({ studentsList, broadcast, guessCount, comments, sho
     } catch (e) { /* 다음 주기에 다시 시도 */ }
   }, []);
   useEffect(() => {
+    if (activeTab !== 'broadcast') return undefined;
     refreshInfo();
     const t = setInterval(refreshInfo, 3000);
     return () => clearInterval(t);
-  }, [refreshInfo]);
+  }, [activeTab, refreshInfo]);
 
   const act = async (name, payload) => {
     const data = await serverAction(name, payload);
-    refreshInfo();
+    if (activeTab === 'broadcast') refreshInfo();
     return data;
   };
   const fail = (err, fallback) => showModal('오류', errorMessage(err, fallback), true);
@@ -564,10 +566,13 @@ export function StudentView({ studentsList, broadcast, guessCount, comments, sho
 export function ParentView({ studentsList, broadcast, guessCount, comments, showModal, serverAction, autoChildName }) {
   const [childName, setChildName] = useState(autoChildName || '');
   const [isEntered, setIsEntered] = useState(!!autoChildName);
+  // 자녀 이름은 교사가 등록한 학생 명단과 상관없이 자유롭게 입력해 입장합니다. (댓글에 적히는 이름으로만 쓰여요.)
   const handleEnter = (e) => {
     e.preventDefault();
-    if (studentsList.some((s) => s.name === childName.trim())) { setChildName(childName.trim()); setIsEntered(true); }
-    else showModal('확인 불가', '학생 이름이 없습니다.', true);
+    const name = childName.trim();
+    if (!name) return showModal('알림', '자녀 이름을 입력해주세요.', true);
+    setChildName(name);
+    setIsEntered(true);
   };
 
   if (!isEntered) {
