@@ -1,6 +1,6 @@
 # 🌻 우리반 칭찬릴레이 — "이 친구는 누구일까요?" (Vercel 배포판)
 
-React(Vite) 화면 + Vercel 서버 함수 + Upstash Redis(데이터 저장) + Gemini(AI 요약)로 구성되어 있습니다.
+React(Vite) 화면 + Vercel 서버 함수 + Redis(데이터 저장) + Gemini(AI 요약)로 구성되어 있습니다.
 기존 Google Apps Script / 구글 시트는 더 이상 필요 없습니다.
 
 ## 배포 순서
@@ -23,11 +23,14 @@ React(Vite) 화면 + Vercel 서버 함수 + Upstash Redis(데이터 저장) + Ge
    - `TEACHER_PASSWORD` : 교사 입장 비밀번호 (직접 정하세요. 6자리 이상 권장)
    - `GEMINI_API_KEY` : 0번에서 새로 발급한 키
 
-### 3. 데이터 저장소(Upstash Redis) 연결
-1. Vercel 프로젝트 > **Storage** 탭 > Create Database > **Upstash (Redis)** 선택
-2. 지역은 가까운 곳(서울 또는 도쿄) 선택, 무료 플랜 선택 후 생성 > 프로젝트에 Connect
-3. `KV_REST_API_URL`, `KV_REST_API_TOKEN` 환경변수가 자동으로 추가됩니다.
-4. Deployments 탭에서 최신 배포의 `...` > **Redeploy** 로 다시 배포
+### 3. 데이터 저장소(Redis) 연결
+1. Vercel 프로젝트 > **Storage** 탭 > Create Database > **Redis** 선택 (Upstash Redis가 아니라 일반 **Redis**를 고르세요)
+2. 무료 플랜(Free) 선택 후 생성
+3. 오른쪽 위 **Connect to Project**를 눌러 이 프로젝트를 선택 (Custom Environment Variable Prefix 칸은 **비워두세요** — 값을 넣으면 연결이 안 됩니다)
+4. `REDIS_URL` 환경변수가 자동으로 추가됩니다.
+5. Deployments 탭에서 최신 배포의 `...` > **Redeploy** 로 다시 배포
+
+> Vercel Storage에는 비슷한 이름의 상품이 두 가지 있어요. **Upstash Redis**(REST 방식)와 **Redis**(연결 문자열 방식)인데, 이 코드는 후자인 **Redis**(`REDIS_URL` 하나로 접속)에 맞춰져 있습니다. 이름을 헷갈리지 않도록 주의하세요.
 
 ### 4. 첫 사용
 1. 배포된 주소(예: https://praise-relay.vercel.app) 접속
@@ -53,7 +56,7 @@ React(Vite) 화면 + Vercel 서버 함수 + Upstash Redis(데이터 저장) + Ge
 1. 이 저장소를 Vercel에서 **각 학급마다 별도 프로젝트로 3번 Import**합니다. (같은 GitHub 저장소를 여러 프로젝트로 가져올 수 있어요.)
    - 예: `praise-5-1`, `praise-5-2`, `praise-5-3` → 각각 `praise-5-1.vercel.app` 같은 주소가 생깁니다.
 2. 각 프로젝트의 Environment Variables에 `TEACHER_PASSWORD`를 **학급마다 다르게** 설정하세요. (같은 비밀번호면 다른 반 교사도 들어갈 수 있어요.)
-3. 각 프로젝트의 Storage 탭에서 **Upstash Redis를 각자 새로 만들어 연결**하세요. 이게 가장 확실한 분리 방법입니다.
+3. 각 프로젝트의 Storage 탭에서 **Redis를 각자 새로 만들어 연결**하세요. 이게 가장 확실한 분리 방법입니다.
 4. (안전장치) 혹시 실수로 여러 프로젝트가 같은 Redis를 공유하게 되더라도 데이터가 섞이지 않도록, 환경변수 `CLASS_ID`에 학급마다 다른 값(예: `class-5-1`)을 넣어두세요. 모든 데이터 키 앞에 이 값이 자동으로 붙어서 서로 다른 학급의 데이터가 절대 겹치지 않습니다. 비워두면 `default`로 동작합니다.
 5. 환경변수를 바꾼 뒤에는 **Redeploy**를 눌러야 적용됩니다.
 
@@ -67,7 +70,7 @@ React(Vite) 화면 + Vercel 서버 함수 + Upstash Redis(데이터 저장) + Ge
 - [ ] 교사 비밀번호와 주소를 수업 직전에 한 번 더 확인
 
 ## 참고
-- 데이터는 Upstash Redis에 저장되며, 학생 정보는 학년·반·번호·이름뿐입니다.
+- 데이터는 Redis에 저장되며, 학생 정보는 학년·반·번호·이름뿐입니다.
 - 맞힌 비율은 "답을 제출한 친구" 기준으로 계산합니다. (우리반 전체 인원 기준으로 바꾸려면 api/action.js 의 revealAnswer 에서 participants 대신 total 로 나누면 됩니다.)
 - 화면은 3초마다 최신 데이터를 확인합니다. (서버는 2초 단위로 응답을 공유해서 접속자가 많아도 안정적입니다.)
 - 사용할 Gemini 모델을 바꾸려면 환경변수 `GEMINI_MODEL`을 추가하세요. (기본값: gemini-3.1-flash-lite)

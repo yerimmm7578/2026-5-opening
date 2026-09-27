@@ -1,5 +1,6 @@
 import {
-  redis, k, readPublicState, readBroadcast, IDLE, passwordMatches, clientIp,
+  redis, k, hsetObj, hgetObj, hgetallObj, getObj, setObj,
+  readPublicState, readBroadcast, IDLE, passwordMatches, clientIp,
   hasBadWord, str, maskName, splitKey,
 } from './_lib.js';
 import { makeSummary } from './_summary.js';
@@ -24,7 +25,7 @@ const cleanStudent = (s) => {
 };
 
 const writtenBy = (keys, writerId) =>
-  keys.filter((k) => splitKey(k)[0] === writerId).map((k) => splitKey(k)[1]);
+  keys.filter((key) => splitKey(key)[0] === writerId).map((key) => splitKey(key)[1]);
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return bad(res, 405, 'method_not_allowed');
@@ -55,7 +56,7 @@ export default async function handler(req, res) {
       case 'addStudent': {
         const s = cleanStudent(payload);
         if (!s) return bad(res, 400, 'invalid_student');
-        await redis.hset(k('students'), { [s.id]: s });
+        await hsetObj(k('students'), { [s.id]: s });
         break;
       }
       case 'addStudentsBulk': {
@@ -65,31 +66,31 @@ export default async function handler(req, res) {
           if (s) obj[s.id] = s;
         });
         if (Object.keys(obj).length === 0) return bad(res, 400, 'invalid_students');
-        await redis.hset(k('students'), obj);
+        await hsetObj(k('students'), obj);
         break;
       }
       case 'removeStudent': {
         const id = str(payload, 60);
         if (!id) break;
         const keys = (await redis.hkeys(k('praises'))) || [];
-        const stale = keys.filter((k) => { const [w, t] = splitKey(k); return w === id || t === id; });
+        const stale = keys.filter((field) => { const [w, t] = splitKey(field); return w === id || t === id; });
         const ops = [redis.hdel(k('students'), id), redis.del(k(`comments:${id}`)), redis.hdel(k('guesses'), id)];
         if (stale.length) ops.push(redis.hdel(k('praises'), ...stale));
         await Promise.all(ops);
         const b = await readBroadcast();
-        if (b.targetId === id) await Promise.all([redis.set(k('broadcast'), IDLE), redis.del(k('guesses'))]);
+        if (b.targetId === id) await Promise.all([setObj(k('broadcast'), IDLE), redis.del(k('guesses'))]);
         break;
       }
 
       // ---------- 교사: 방송 제어 ----------
       case 'teacherInfo': {
-        const p = redis.pipeline();
-        p.hkeys('praises');
-        p.get('broadcast');
-        p.hlen('guesses');
-        const [keys, b, guessCount] = await p.exec();
+        const [keys, b, guessCount] = await Promise.all([
+          redis.hkeys(k('praises')),
+          getObj(k('broadcast')),
+          redis.hlen(k('guesses')),
+        ]);
         const praiseCounts = {};
-        (keys || []).forEach((k) => { const t = splitKey(k)[1]; praiseCounts[t] = (praiseCounts[t] || 0) + 1; });
+        (keys || []).forEach((field) => { const t = splitKey(field)[1]; praiseCounts[t] = (praiseCounts[t] || 0) + 1; });
         data = { praiseCounts, broadcast: b && typeof b === 'object' ? b : IDLE, guessCount: Number(guessCount || 0) };
         break;
       }
@@ -97,11 +98,11 @@ export default async function handler(req, res) {
       // AI 요약 초안 만들기 (교사가 확인·수정한 뒤 방송을 시작합니다)
       case 'prepareSummary': {
         const studentId = str(payload?.studentId, 60);
-        const student = await redis.hget(k('students'), studentId);
+        const student = await hgetObj(k('students'), studentId);
         if (!student) return bad(res, 404, 'no_student');
-        const all = (await redis.hgetall(k('praises'))) || {};
+        const all = await hgetallObj(k('praises'));
         const texts = Object.entries(all)
-          .filter(([k]) => splitKey(k)[1] === studentId)
+          .filter(([field]) => splitKey(field)[1] === studentId)
           .map(([, v]) => v.text);
         if (texts.length === 0) return bad(res, 400, 'no_praises');
         data = { ...(await makeSummary(student.name, texts)), praiseCount: texts.length };
@@ -110,29 +111,29 @@ export default async function handler(req, res) {
 
       case 'startBroadcast': {
         const studentId = str(payload?.studentId, 60);
-        const student = await redis.hget(k('students'), studentId);
+        const student = await hgetObj(k('students'), studentId);
         if (!student) return bad(res, 404, 'no_student');
         const summary = maskName(str(payload?.summary, 800), student.name);
         if (!summary) return bad(res, 400, 'invalid_summary');
         await redis.del(k('guesses'));
-        await redis.set(k('broadcast'), { phase: 'guessing', roundId: Date.now(), targetId: studentId, summary, result: null });
+        await setObj(k('broadcast'), { phase: 'guessing', roundId: Date.now(), targetId: studentId, summary, result: null });
         break;
       }
 
       case 'revealAnswer': {
         const b = await readBroadcast();
         if (b.phase !== 'guessing') return bad(res, 400, 'not_guessing');
-        const [guesses, total] = await Promise.all([redis.hgetall(k('guesses')), redis.hlen(k('students'))]);
+        const [guesses, total] = await Promise.all([hgetallObj(k('guesses')), redis.hlen(k('students'))]);
         const votes = Object.values(guesses || {});
         const participants = votes.length;
         const correct = votes.filter((v) => v.guessId === b.targetId).length;
         const result = { correct, participants, total: Number(total || 0), percent: participants ? Math.round((correct / participants) * 100) : 0 };
-        await redis.set(k('broadcast'), { ...b, phase: 'revealed', result });
+        await setObj(k('broadcast'), { ...b, phase: 'revealed', result });
         break;
       }
 
       case 'endBroadcast':
-        await Promise.all([redis.set(k('broadcast'), IDLE), redis.del(k('guesses'))]);
+        await Promise.all([setObj(k('broadcast'), IDLE), redis.del(k('guesses'))]);
         break;
 
       // ---------- 교사: 댓글 관리 ----------
@@ -143,10 +144,8 @@ export default async function handler(req, res) {
         break;
       }
       case 'getAllComments': {
-        const students = Object.values((await redis.hgetall(k('students'))) || {});
-        const p = redis.pipeline();
-        students.forEach((s) => p.hgetall(k(`comments:${s.id}`)));
-        const results = students.length ? await p.exec() : [];
+        const students = Object.values(await hgetallObj(k('students')));
+        const results = await Promise.all(students.map((s) => hgetallObj(k(`comments:${s.id}`))));
         const list = [];
         students.forEach((s, i) => {
           Object.values(results[i] || {}).forEach((c) => list.push({ ...c, studentName: s.name }));
@@ -160,7 +159,7 @@ export default async function handler(req, res) {
       case 'resetData': {
         const ids = (await redis.hkeys(k('students'))) || [];
         await Promise.all([
-          redis.del(k('praises')), redis.del(k('guesses')), redis.set(k('broadcast'), IDLE),
+          redis.del(k('praises')), redis.del(k('guesses')), setObj(k('broadcast'), IDLE),
           ...ids.map((id) => redis.del(k(`comments:${id}`))),
         ]);
         break;
@@ -170,7 +169,7 @@ export default async function handler(req, res) {
       case 'myStatus': {
         const writerId = str(payload?.writerId, 60);
         const [keys, b, guess] = await Promise.all([
-          redis.hkeys(k('praises')), readBroadcast(), redis.hget(k('guesses'), writerId),
+          redis.hkeys(k('praises')), readBroadcast(), hgetObj(k('guesses'), writerId),
         ]);
         data = {
           written: writtenBy(keys || [], writerId),
@@ -187,7 +186,7 @@ export default async function handler(req, res) {
         if (!writerId || !targetId || writerId === targetId || !text) return bad(res, 400, 'invalid_praise');
         if (hasBadWord(text)) return bad(res, 400, 'profanity');
         // 같은 친구에게는 1개만 저장(중복 클릭해도 한 번만 등록)
-        await redis.hset(k('praises'), { [`${writerId}>${targetId}`]: { text } });
+        await hsetObj(k('praises'), { [`${writerId}>${targetId}`]: { text } });
         data = { written: writtenBy((await redis.hkeys(k('praises'))) || [], writerId) };
         break;
       }
@@ -199,7 +198,7 @@ export default async function handler(req, res) {
         const guessId = str(payload?.guessId, 60);
         const [okW, okG] = await Promise.all([redis.hexists(k('students'), writerId), redis.hexists(k('students'), guessId)]);
         if (!okW || !okG) return bad(res, 400, 'invalid_guess');
-        await redis.hset(k('guesses'), { [writerId]: { guessId } });
+        await hsetObj(k('guesses'), { [writerId]: { guessId } });
         data = { ok: true, guessId, roundId: b.roundId };
         break;
       }
@@ -213,7 +212,7 @@ export default async function handler(req, res) {
         if (!writerName || !text) return bad(res, 400, 'invalid_comment');
         if (hasBadWord(text)) return bad(res, 400, 'profanity');
         const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        await redis.hset(k(`comments:${targetStudentId}`), { [id]: { id, writerName, targetStudentId, text, timestamp: Date.now() } });
+        await hsetObj(k(`comments:${targetStudentId}`), { [id]: { id, writerName, targetStudentId, text, timestamp: Date.now() } });
         break;
       }
 
