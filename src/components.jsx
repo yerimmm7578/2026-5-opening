@@ -1,5 +1,5 @@
 import { useState, useEffect, memo } from 'react';
-import { IconSparkles, IconHeart, IconDownload, IconSend, IconTrash } from './icons.jsx';
+import { IconSparkles, IconHeart, IconSend, IconTrash } from './icons.jsx';
 import { checkProfanity, errorMessage } from './utils.js';
 
 export const Modal = ({ isOpen, onClose, title, message, isError }) => {
@@ -117,29 +117,10 @@ const GuessPhase = ({ viewerRole, summary, students, guessCount, myGuessId, onSu
 
 // ---------- 정답 발표 화면 ----------
 const RevealPhase = ({ student, summary, result, myGuessId, viewerRole, showModal }) => {
-  const handleDownload = async () => {
-    const target = document.getElementById('capture-area');
-    if (!target) return;
-    try {
-      const { default: html2canvas } = await import('html2canvas');
-      const canvas = await html2canvas(target, { scale: 2, backgroundColor: '#ffffff', useCORS: true });
-      const link = document.createElement('a');
-      link.download = `${student.name}_칭찬카드.png`;
-      link.href = canvas.toDataURL();
-      link.click();
-      showModal('저장 완료', '결과 카드가 기기에 이미지로 저장되었습니다.');
-    } catch (e) {
-      showModal('오류', '이미지 저장에 실패했습니다.', true);
-    }
-  };
-
   const r = result || { percent: 0, correct: 0, participants: 0, total: 0 };
 
   return (
     <div>
-      <div className="flex justify-end mb-3">
-        <button onClick={handleDownload} className="flex items-center gap-1 px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-bold rounded-xl transition shadow-sm border border-gray-200"><IconDownload /> 결과 카드 이미지로 저장</button>
-      </div>
       <div id="capture-area" className="p-4 -mx-4 bg-white rounded-xl space-y-5">
         <div className="text-center">
           <p className="text-sm font-bold text-gray-500 mb-1">정답은 바로...</p>

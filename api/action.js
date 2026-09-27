@@ -74,7 +74,7 @@ export default async function handler(req, res) {
         if (!id) break;
         const keys = (await redis.hkeys(k('praises'))) || [];
         const stale = keys.filter((field) => { const [w, t] = splitKey(field); return w === id || t === id; });
-        const ops = [redis.hdel(k('students'), id), redis.del(k(`comments:${id}`)), redis.hdel(k('guesses'), id)];
+        const ops = [redis.hdel(k('students'), id), redis.del(k(`comments:${id}`)), redis.hdel(k('guesses'), id), redis.srem(k('revealedIds'), id)];
         if (stale.length) ops.push(redis.hdel(k('praises'), ...stale));
         await Promise.all(ops);
         const b = await readBroadcast();
@@ -84,14 +84,15 @@ export default async function handler(req, res) {
 
       // ---------- 교사: 방송 제어 ----------
       case 'teacherInfo': {
-        const [keys, b, guessCount] = await Promise.all([
+        const [keys, b, guessCount, revealedIds] = await Promise.all([
           redis.hkeys(k('praises')),
           getObj(k('broadcast')),
           redis.hlen(k('guesses')),
+          redis.smembers(k('revealedIds')),
         ]);
         const praiseCounts = {};
         (keys || []).forEach((field) => { const t = splitKey(field)[1]; praiseCounts[t] = (praiseCounts[t] || 0) + 1; });
-        data = { praiseCounts, broadcast: b && typeof b === 'object' ? b : IDLE, guessCount: Number(guessCount || 0) };
+        data = { praiseCounts, broadcast: b && typeof b === 'object' ? b : IDLE, guessCount: Number(guessCount || 0), revealedIds: revealedIds || [] };
         break;
       }
 
@@ -128,7 +129,10 @@ export default async function handler(req, res) {
         const participants = votes.length;
         const correct = votes.filter((v) => v.guessId === b.targetId).length;
         const result = { correct, participants, total: Number(total || 0), percent: participants ? Math.round((correct / participants) * 100) : 0 };
-        await setObj(k('broadcast'), { ...b, phase: 'revealed', result });
+        await Promise.all([
+          setObj(k('broadcast'), { ...b, phase: 'revealed', result }),
+          redis.sadd(k('revealedIds'), b.targetId),
+        ]);
         break;
       }
 
@@ -159,7 +163,7 @@ export default async function handler(req, res) {
       case 'resetData': {
         const ids = (await redis.hkeys(k('students'))) || [];
         await Promise.all([
-          redis.del(k('praises')), redis.del(k('guesses')), setObj(k('broadcast'), IDLE),
+          redis.del(k('praises')), redis.del(k('guesses')), redis.del(k('revealedIds')), setObj(k('broadcast'), IDLE),
           ...ids.map((id) => redis.del(k(`comments:${id}`))),
         ]);
         break;

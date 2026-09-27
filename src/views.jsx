@@ -69,9 +69,9 @@ export function TeacherView({ studentsList, broadcast, guessCount, comments, sho
   const [newStudent, setNewStudent] = useState({ grade: '5', classNum: '1', name: '', number: '' });
   const fileInputRef = useRef(null);
 
-  // 교사 전용 정보(학생별 칭찬 개수, 정답, 제출 인원)를 확인합니다.
+  // 교사 전용 정보(학생별 칭찬 개수, 정답, 제출 인원, 발표 완료 목록)를 확인합니다.
   // 저장소 요청을 아끼기 위해 [방송 제어] 탭을 보고 있을 때만 3초마다 확인해요.
-  const [info, setInfo] = useState({ praiseCounts: {}, broadcast: null, guessCount: 0 });
+  const [info, setInfo] = useState({ praiseCounts: {}, broadcast: null, guessCount: 0, revealedIds: [] });
   const refreshInfo = useCallback(async () => {
     if (document.hidden) return;
     try {
@@ -377,16 +377,23 @@ export function TeacherView({ studentsList, broadcast, guessCount, comments, sho
           {phase === 'idle' && (
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-orange-100">
               <h3 className="font-bold text-gray-800 mb-1">맞히기를 진행할 친구 고르기</h3>
-              <p className="text-xs text-gray-500 mb-4">칭찬이 1개 이상 도착한 친구만 방송할 수 있어요.</p>
+              <p className="text-xs text-gray-500 mb-4">칭찬이 1개 이상 도착한 친구만 방송할 수 있어요. 이미 발표를 마친 친구는 다시 방송할 수 없어요.</p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {studentsList.map((student) => {
                   const count = info.praiseCounts[student.id] || 0;
+                  const isRevealed = (info.revealedIds || []).includes(student.id);
                   return (
-                    <div key={student.id} className={`p-4 rounded-xl border ${prep && prep.student.id === student.id ? 'border-purple-400 ring-2 ring-purple-200' : 'bg-white'} text-center flex flex-col gap-2 transition-all`}>
+                    <div key={student.id} className={`p-4 rounded-xl border ${prep && prep.student.id === student.id ? 'border-purple-400 ring-2 ring-purple-200' : 'bg-white'} ${isRevealed ? 'opacity-50' : ''} text-center flex flex-col gap-2 transition-all`}>
                       <div className="text-sm font-bold text-gray-400">{student.number}번</div>
                       <div className="text-lg font-black">{student.name}</div>
-                      <div className={`text-xs font-bold ${count ? 'text-pink-500' : 'text-gray-300'}`}>💌 칭찬 {count}개</div>
-                      <button onClick={() => openPrep(student)} disabled={!count} className="py-1.5 rounded-lg text-sm font-bold bg-gray-800 text-white disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed">방송 시작</button>
+                      {isRevealed ? (
+                        <div className="text-xs font-bold text-green-500">✅ 발표 완료</div>
+                      ) : (
+                        <div className={`text-xs font-bold ${count ? 'text-pink-500' : 'text-gray-300'}`}>💌 칭찬 {count}개</div>
+                      )}
+                      <button onClick={() => openPrep(student)} disabled={!count || isRevealed} className="py-1.5 rounded-lg text-sm font-bold bg-gray-800 text-white disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed">
+                        {isRevealed ? '발표 완료' : '방송 시작'}
+                      </button>
                     </div>
                   );
                 })}
