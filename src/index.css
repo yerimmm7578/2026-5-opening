@@ -4,10 +4,10 @@
 
 @font-face {
   font-family: 'Gowun Dodum';
-  src: url('https://fonts.gstatic.com/s/gowundodum/v18/3Jn5SD_00GqwlBnkPUukWJhtdrmm0z9jclRVBw.woff2') format('woff2');
-  font-weight: normal;
   font-style: normal;
+  font-weight: 400;
   font-display: swap;
+  src: url(https://cdn.jsdelivr.net/fontsource/fonts/gowun-dodum@latest/korean-400-normal.woff2) format('woff2');
 }
 
 * {
