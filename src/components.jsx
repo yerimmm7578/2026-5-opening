@@ -21,28 +21,14 @@ export const Modal = ({ isOpen, onClose, title, message, isError }) => {
   );
 };
 
-const Avatar = ({ name }) => {
-  const [broken, setBroken] = useState(false);
-  if (broken) return <div className="w-full h-full flex items-center justify-center text-5xl bg-purple-50">🌟</div>;
-  return (
-    <img
-      src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${encodeURIComponent(name + '칭찬')}&backgroundColor=e2e8f0`}
-      className="w-full h-full object-cover" crossOrigin="anonymous" alt="" onError={() => setBroken(true)}
-    />
-  );
-};
-
-// AI 요약 카드 (맞히기 중에는 "?" 아바타, 정답 발표 후에는 학생 아바타)
+// AI 요약 카드
 const SummaryCard = ({ summary, student }) => (
   <div className="mb-6 bg-gradient-to-br from-purple-50 to-indigo-50 p-5 rounded-2xl border border-purple-200 relative overflow-hidden">
     <div className="absolute top-0 right-0 p-3 opacity-20"><IconSparkles /></div>
     <h3 className="font-bold text-purple-800 mb-4 flex items-center gap-2">
       <IconSparkles /> {student ? `AI가 정리한 ${student.name} 친구의 모습` : 'AI가 친구들의 칭찬을 읽고 정리했어요'}
     </h3>
-    <div className="flex flex-col sm:flex-row gap-4 items-center">
-      <div className="w-28 h-28 shrink-0 rounded-full bg-white border-4 border-purple-200 shadow-inner overflow-hidden flex items-center justify-center">
-        {student ? <Avatar name={student.name} /> : <span className="text-6xl font-black text-purple-300">?</span>}
-      </div>
+    <div className="flex flex-col gap-4">
       <div className="flex-1 bg-white/70 backdrop-blur-sm p-4 rounded-xl border border-purple-100 shadow-sm text-gray-800 text-base leading-relaxed font-medium">
         "{summary}"
       </div>
