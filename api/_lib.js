@@ -1,31 +1,44 @@
-import { initializeApp, getApps, cert, } from 'firebase-admin/app';
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { getFirestore, FieldPath, FieldValue } from 'firebase-admin/firestore';
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 // ============================================================
 //  Firebase(Firestore) 연결
-//  Vercel 환경변수 3개가 필요합니다:
-//  FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY
+//  Vercel 환경변수 FIREBASE_SERVICE_ACCOUNT 에 서비스 계정 JSON 파일 내용 전체를 넣습니다.
+//  (예전 방식의 FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY 도 대신 사용 가능)
 // ============================================================
 const clean = (v) => String(v || '').trim().replace(/^"([\s\S]*)"$/, '$1');
 
-const PROJECT_ID = clean(process.env.FIREBASE_PROJECT_ID);
-const CLIENT_EMAIL = clean(process.env.FIREBASE_CLIENT_EMAIL);
-const PRIVATE_KEY = clean(process.env.FIREBASE_PRIVATE_KEY).replace(/\\n/g, '\n');
+function loadCredential() {
+  const raw = String(process.env.FIREBASE_SERVICE_ACCOUNT || '').trim();
+  if (raw) {
+    try {
+      const sa = JSON.parse(raw);
+      return {
+        projectId: sa.project_id,
+        clientEmail: sa.client_email,
+        privateKey: String(sa.private_key || '').replace(/\\n/g, '\n'),
+      };
+    } catch (e) {
+      console.error('FIREBASE_SERVICE_ACCOUNT 값이 올바른 JSON이 아닙니다. 파일 내용 전체({ 부터 } 까지)를 복사했는지 확인하세요.');
+      throw new Error('FIREBASE_SERVICE_ACCOUNT_INVALID_JSON');
+    }
+  }
+  const projectId = clean(process.env.FIREBASE_PROJECT_ID);
+  const clientEmail = clean(process.env.FIREBASE_CLIENT_EMAIL);
+  const privateKey = clean(process.env.FIREBASE_PRIVATE_KEY).replace(/\\n/g, '\n');
+  if (projectId && clientEmail && privateKey) return { projectId, clientEmail, privateKey };
+  return null;
+}
 
 function getDb() {
-  if (!PROJECT_ID || !CLIENT_EMAIL || !PRIVATE_KEY) {
-    console.error('Firebase 환경변수가 없습니다. Vercel > Settings > Environment Variables 3개를 확인하고 Redeploy 하세요.');
-    throw new Error('FIREBASE_ENV_NOT_SET');
-  }
   if (!getApps().length) {
-    initializeApp({
-      credential: cert({
-        projectId: PROJECT_ID,
-        clientEmail: CLIENT_EMAIL,
-        privateKey: PRIVATE_KEY,
-      }),
-    });
+    const cred = loadCredential();
+    if (!cred) {
+      console.error('Firebase 환경변수가 없습니다. Vercel > Settings > Environment Variables 에서 FIREBASE_SERVICE_ACCOUNT 를 확인하고 Redeploy 하세요.');
+      throw new Error('FIREBASE_ENV_NOT_SET');
+    }
+    initializeApp({ credential: cert(cred) });
   }
   return getFirestore();
 }
