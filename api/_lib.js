@@ -1,39 +1,190 @@
-import Redis from 'ioredis';
+import { initializeApp, getApps, cert, } from 'firebase-admin/app';
+import { getFirestore, FieldPath, FieldValue } from 'firebase-admin/firestore';
 import { createHash, timingSafeEqual } from 'node:crypto';
 
-// ★ Vercel Storage에서 만든 Redis는 "REDIS_URL" 하나로 접속하는 일반 Redis 방식입니다.
-// (Upstash REST 방식과는 다릅니다.) KV_URL은 예전 Vercel KV가 남긴 이름이라 혹시 몰라 함께 봐 둡니다.
-const REDIS_URL = process.env.REDIS_URL || process.env.KV_URL || '';
+// ============================================================
+//  Firebase(Firestore) 연결
+//  Vercel 환경변수 3개가 필요합니다:
+//  FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY
+// ============================================================
+const clean = (v) => String(v || '').trim().replace(/^"([\s\S]*)"$/, '$1');
 
-function createClient() {
-  if (!REDIS_URL) {
-    console.error('REDIS_URL 환경변수가 없습니다. Vercel > Storage에서 Redis를 프로젝트에 연결했는지, Redeploy를 했는지 확인하세요.');
-    // 명확한 오류가 나도록, 어떤 명령을 호출해도 즉시 실패하는 가짜 클라이언트를 돌려줍니다.
-    const fail = () => Promise.reject(new Error('REDIS_URL_NOT_SET'));
-    return new Proxy({}, { get: () => fail });
+const PROJECT_ID = clean(process.env.FIREBASE_PROJECT_ID);
+const CLIENT_EMAIL = clean(process.env.FIREBASE_CLIENT_EMAIL);
+const PRIVATE_KEY = clean(process.env.FIREBASE_PRIVATE_KEY).replace(/\\n/g, '\n');
+
+function getDb() {
+  if (!PROJECT_ID || !CLIENT_EMAIL || !PRIVATE_KEY) {
+    console.error('Firebase 환경변수가 없습니다. Vercel > Settings > Environment Variables 3개를 확인하고 Redeploy 하세요.');
+    throw new Error('FIREBASE_ENV_NOT_SET');
   }
-  const client = new Redis(REDIS_URL, {
-    // 서버리스 환경에서 연결이 잠깐 끊겨도 요청마다 오래 기다리지 않도록 재시도를 짧게 제한합니다.
-    maxRetriesPerRequest: 2,
-    retryStrategy: (times) => Math.min(times * 200, 1000),
-    enableAutoPipelining: true,
-  });
-  client.on('error', (e) => console.error('redis client error:', e && e.message));
-  return client;
+  if (!getApps().length) {
+    initializeApp({
+      credential: cert({
+        projectId: PROJECT_ID,
+        clientEmail: CLIENT_EMAIL,
+        privateKey: PRIVATE_KEY,
+      }),
+    });
+  }
+  return getFirestore();
 }
 
-// Vercel 서버리스 함수의 컨테이너가 재사용될 때(warm start) 같은 연결을 다시 쓰도록
-// 전역(global) 스코프에 클라이언트를 한 번만 만들어 캐시합니다.
-export const redis = globalThis.__praiseRedisClient || (globalThis.__praiseRedisClient = createClient());
+// ============================================================
+//  Redis 명령 흉내 내기 (다른 api 파일들이 기존처럼 redis.xxx 를 써도 동작하도록)
+//  저장 위치: Firestore 컬렉션 "kv" 안에 키 하나당 문서 하나
+//   - 문자열: { value: "..." }
+//   - 해시:   { data: { 필드: "값", ... } }
+// ============================================================
+const COL = 'kv';
+const ref = (key) => getDb().collection(COL).doc(encodeURIComponent(String(key)));
 
-// ★ 여러 학급이 같은 Redis 저장소를 공유하게 되더라도 데이터가 섞이지 않도록,
+const live = (snap) => {
+  if (!snap.exists) return null;
+  const d = snap.data();
+  if (d.expiresAt && d.expiresAt <= Date.now()) return null;
+  return d;
+};
+
+const commands = {
+  async get(key) {
+    const d = live(await ref(key).get());
+    return d && d.value != null ? d.value : null;
+  },
+
+  async set(key, value, ...opts) {
+    let ttlMs = 0;
+    let nx = false;
+    for (let i = 0; i < opts.length; i++) {
+      const o = String(opts[i]).toUpperCase();
+      if (o === 'EX') ttlMs = Number(opts[++i]) * 1000;
+      else if (o === 'PX') ttlMs = Number(opts[++i]);
+      else if (o === 'NX') nx = true;
+    }
+    const doc = { type: 'string', value: String(value), expiresAt: ttlMs ? Date.now() + ttlMs : null };
+    const r = ref(key);
+    if (nx) {
+      return getDb().runTransaction(async (t) => {
+        if (live(await t.get(r))) return null;
+        t.set(r, doc);
+        return 'OK';
+      });
+    }
+    await r.set(doc);
+    return 'OK';
+  },
+
+  async del(...keys) {
+    await Promise.all(keys.flat().map((key) => ref(key).delete()));
+    return keys.flat().length;
+  },
+
+  async exists(...keys) {
+    const snaps = await Promise.all(keys.flat().map((key) => ref(key).get()));
+    return snaps.filter((s) => live(s)).length;
+  },
+
+  async incrby(key, n) {
+    const r = ref(key);
+    return getDb().runTransaction(async (t) => {
+      const d = live(await t.get(r));
+      const next = Number((d && d.value) || 0) + Number(n);
+      t.set(r, { type: 'string', value: String(next), expiresAt: (d && d.expiresAt) || null });
+      return next;
+    });
+  },
+
+  async incr(key) {
+    return commands.incrby(key, 1);
+  },
+
+  async expire(key, seconds) {
+    try {
+      await ref(key).update({ expiresAt: Date.now() + Number(seconds) * 1000 });
+      return 1;
+    } catch {
+      return 0;
+    }
+  },
+
+  // hset(key, {필드: 값}) 또는 hset(key, 필드, 값, 필드, 값 ...)
+  async hset(key, ...args) {
+    const data = {};
+    if (args.length === 1 && args[0] && typeof args[0] === 'object') {
+      Object.entries(args[0]).forEach(([f, v]) => { data[f] = String(v); });
+    } else {
+      for (let i = 0; i + 1 < args.length; i += 2) data[String(args[i])] = String(args[i + 1]);
+    }
+    const n = Object.keys(data).length;
+    if (!n) return 0;
+    await ref(key).set({ type: 'hash', data }, { merge: true });
+    return n;
+  },
+
+  async hget(key, field) {
+    const d = live(await ref(key).get());
+    const v = d && d.data ? d.data[field] : null;
+    return v == null ? null : v;
+  },
+
+  async hgetall(key) {
+    const d = live(await ref(key).get());
+    return (d && d.data) || {};
+  },
+
+  async hlen(key) {
+    const d = live(await ref(key).get());
+    return d && d.data ? Object.keys(d.data).length : 0;
+  },
+
+  async hexists(key, field) {
+    const d = live(await ref(key).get());
+    return d && d.data && d.data[field] != null ? 1 : 0;
+  },
+
+  async hdel(key, ...fields) {
+    const list = fields.flat();
+    if (!list.length) return 0;
+    const args = [];
+    list.forEach((f) => { args.push(new FieldPath('data', String(f)), FieldValue.delete()); });
+    try {
+      await ref(key).update(...args);
+      return list.length;
+    } catch (e) {
+      if (e && (e.code === 5 || /NOT_FOUND/.test(String(e.message)))) return 0;
+      throw e;
+    }
+  },
+
+  async hincrby(key, field, n) {
+    const r = ref(key);
+    return getDb().runTransaction(async (t) => {
+      const d = live(await t.get(r));
+      const data = { ...((d && d.data) || {}) };
+      const next = Number(data[field] || 0) + Number(n);
+      data[field] = String(next);
+      t.set(r, { type: 'hash', data });
+      return next;
+    });
+  },
+};
+
+// 지원하지 않는 명령이 호출되면, 어떤 명령인지 알려주는 오류를 냅니다.
+export const redis = new Proxy(commands, {
+  get(target, prop) {
+    if (prop in target) return target[prop];
+    if (prop === 'then' || typeof prop === 'symbol') return undefined;
+    return () => Promise.reject(new Error(`UNSUPPORTED_REDIS_COMMAND: ${String(prop)}`));
+  },
+});
+
+// ★ 여러 학급이 같은 저장소를 공유하게 되더라도 데이터가 섞이지 않도록,
 // 모든 키 앞에 학급 구분 접두사를 붙입니다. Vercel 환경변수 CLASS_ID를 넣으면
 // 그 값이, 넣지 않으면 'default'가 사용됩니다.
 const NS = String(process.env.CLASS_ID || 'default').trim().replace(/[^a-zA-Z0-9_-]/g, '') || 'default';
 export const k = (name) => `${NS}:${name}`;
 
 // ---- JSON 직렬화 헬퍼 ----
-// 일반 Redis는 문자열만 저장하므로, 객체는 JSON 문자열로 감싸서 넣고 꺼낼 때 다시 풀어줍니다.
 const enc = (v) => JSON.stringify(v);
 const dec = (v) => { try { return v == null ? null : JSON.parse(v); } catch { return null; } };
 
