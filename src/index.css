@@ -2,16 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-@font-face {
-  font-family: 'Gowun Dodum';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(https://cdn.jsdelivr.net/fontsource/fonts/gowun-dodum@latest/korean-400-normal.woff2) format('woff2');
-}
-
 * {
-  font-family: 'Gowun Dodum', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', sans-serif !important;
+  font-family: 'Pretendard', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', sans-serif !important;
 }
 
 @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }

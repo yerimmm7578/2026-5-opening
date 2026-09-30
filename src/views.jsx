@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { IconUser, IconTeacher, IconPlay, IconSend, IconTrash, IconUpload } from './icons.jsx';
-import { BroadcastView, WordCloud, FeelingView, FEELING_QUESTION } from './components.jsx';
+import { BroadcastView, WordCloud, FeelingView, FEELING_QUESTION, StrengthReport, ClassStrengthChart } from './components.jsx';
 import { callAction, setTeacherKey } from './api.js';
-import { checkProfanity, errorMessage } from './utils.js';
+import { checkProfanity, errorMessage, STRENGTHS, strengthColor } from './utils.js';
 
 export function HomeView({ setViewMode, showModal }) {
   const [teacherPw, setTeacherPw] = useState('');
@@ -28,12 +28,12 @@ export function HomeView({ setViewMode, showModal }) {
     <div className="flex flex-col items-center justify-center py-8 space-y-10 animate-fade-in-up">
       <div className="text-center space-y-3">
         <h2 className="text-3xl font-extrabold text-gray-800">따뜻한 마음을 나누는 시간</h2>
-        <p className="text-gray-600">친구들의 칭찬으로 "이 친구는 누구일까요?" 맞혀봐요!</p>
+        <p className="text-gray-600">친구의 강점을 찾아 주고, 친구들이 본 나의 모습을 돌아보는 시간</p>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-2xl">
         <div onClick={() => setViewMode('student')} className="bg-white p-8 rounded-3xl shadow-sm border border-blue-100 hover:shadow-xl cursor-pointer text-center flex flex-col items-center gap-4">
           <div className="w-16 h-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center"><IconUser /></div>
-          <div><h3 className="text-xl font-bold mb-1">학생 입장</h3><p className="text-xs text-gray-500">칭찬 쓰기 · 친구 맞히기 · 기분 나누기</p></div>
+          <div><h3 className="text-xl font-bold mb-1">학생 입장</h3><p className="text-xs text-gray-500">강점 칭찬 · 추리 · 성찰</p></div>
         </div>
         <div className="bg-white p-8 rounded-3xl shadow-sm border border-orange-100 text-center flex flex-col items-center gap-4 relative overflow-hidden">
           {!showPwInput ? (
@@ -59,14 +59,17 @@ export function HomeView({ setViewMode, showModal }) {
 // =====================================================================
 // 교사 화면
 // =====================================================================
-export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen, feelings, showModal, serverAction }) {
+export function TeacherView({ studentsList, broadcast, guessCount, activity, feelingCount, feelings, showModal, serverAction }) {
+  const a2Open = activity === 'a2';
+  const feelingsOpen = activity === 'a3';
+  const a4Open = activity === 'a4';
   const [activeTab, setActiveTab] = useState('manage');
   const [newStudent, setNewStudent] = useState({ grade: '5', classNum: '1', name: '', number: '' });
   const fileInputRef = useRef(null);
 
   // 교사 전용 정보(학생별 칭찬 개수, 정답, 제출 인원, 발표 완료 목록)를 확인합니다.
   // 저장소 요청을 아끼기 위해 [활동2] 탭을 보고 있을 때만 3초마다 확인해요.
-  const [info, setInfo] = useState({ praiseCounts: {}, broadcast: null, guessCount: 0, revealedIds: [] });
+  const [info, setInfo] = useState({ praiseCounts: {}, strengthTotals: {}, selfCount: 0, reflectionCount: 0, broadcast: null, guessCount: 0, revealedIds: [] });
   const refreshInfo = useCallback(async () => {
     if (document.hidden) return;
     try {
@@ -75,7 +78,7 @@ export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen,
     } catch (e) { /* 다음 주기에 다시 시도 */ }
   }, []);
   useEffect(() => {
-    if (activeTab !== 'activity2') return undefined;
+    if (activeTab !== 'activity2' && activeTab !== 'activity4') return undefined;
     refreshInfo();
     const t = setInterval(refreshInfo, 3000);
     return () => clearInterval(t);
@@ -83,10 +86,20 @@ export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen,
 
   const act = async (name, payload) => {
     const data = await serverAction(name, payload);
-    if (activeTab === 'activity2') refreshInfo();
+    if (activeTab === 'activity2' || activeTab === 'activity4') refreshInfo();
     return data;
   };
   const fail = (err, fallback) => showModal('오류', errorMessage(err, fallback), true);
+
+  // ---------- 활동2: 시작 / 중지 ----------
+  const startActivity2 = async () => {
+    if ((feelingsOpen || a4Open) && !confirm('진행 중인 다른 활동이 중지되고 활동2가 시작돼요. 계속할까요?')) return;
+    try { await act('startActivity2'); } catch (err) { fail(err, '활동2를 시작하지 못했어요.'); }
+  };
+  const stopActivity2 = async () => {
+    if (broadcast.phase !== 'idle' && !confirm('진행 중인 친구 맞히기가 끝나고, 학생 화면이 칭찬 쓰기 화면으로 돌아가요.\n활동2를 중지할까요?')) return;
+    try { await act('stopActivity2'); } catch (err) { fail(err, '활동2를 중지하지 못했어요.'); }
+  };
 
   // ---------- 활동2: 물음표 상자 ----------
   const [opening, setOpening] = useState(null); // AI 요약을 만드는 중인 학생 id
@@ -110,6 +123,9 @@ export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen,
     setRevealing(true);
     try { await act('revealAnswer'); } catch (err) { fail(err, '정답을 확인하지 못했어요.'); }
     setRevealing(false);
+  };
+  const handleHint = async () => {
+    try { await act('nextHint'); } catch (err) { fail(err, '힌트를 열지 못했어요.'); }
   };
   const handleCancel = async () => {
     if (!confirm('정답 확인 전이에요. 이 상자를 닫고 다른 상자를 고를까요?\n(지금까지 제출된 답은 사라져요)')) return;
@@ -199,13 +215,22 @@ export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen,
     } catch (err) { fail(err, '초기화에 실패했습니다.'); }
   };
 
+  // ---------- 활동4: 나 vs 친구가 본 나 ----------
+  const startActivity4 = async () => {
+    if ((a2Open || feelingsOpen) && !confirm('진행 중인 다른 활동이 중지되고 활동4가 시작돼요. 계속할까요?')) return;
+    try { await act('startActivity4'); } catch (err) { fail(err, '활동4를 시작하지 못했어요.'); }
+  };
+  const stopActivity4 = async () => {
+    try { await act('stopActivity4'); } catch (err) { fail(err, '활동4를 중지하지 못했어요.'); }
+  };
+
   // ---------- 활동3: 기분 나누기 ----------
   const startFeelings = async () => {
-    if (phase !== 'idle' && !confirm('진행 중인 활동2가 끝나고 활동3이 시작돼요. 계속할까요?')) return;
+    if ((a2Open || a4Open) && !confirm('진행 중인 다른 활동이 중지되고 활동3이 시작돼요. 계속할까요?')) return;
     try { await act('startFeelings'); } catch (err) { fail(err, '활동3을 시작하지 못했어요.'); }
   };
   const endFeelings = async () => {
-    try { await act('endFeelings'); } catch (err) { fail(err, '활동3을 끝내지 못했어요.'); }
+    try { await act('endFeelings'); } catch (err) { fail(err, '활동3을 중지하지 못했어요.'); }
   };
   const removeFeeling = async (text) => {
     if (!confirm(`"${text}" 를 화면에서 지울까요?`)) return;
@@ -226,7 +251,7 @@ export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen,
   // 물음표 상자 순서: 번호 순서대로 두면 누구인지 짐작할 수 있어서, 고정된 무작위 순서로 섞어요.
   const boxHash = (str) => { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0; return h; };
   const boxStudents = [...studentsList].sort((a, b) => boxHash(a.id) - boxHash(b.id));
-  const BOX_COLORS = ['from-orange-400 to-pink-500', 'from-purple-400 to-indigo-500', 'from-sky-400 to-blue-500', 'from-emerald-400 to-teal-500', 'from-yellow-400 to-orange-500', 'from-pink-400 to-rose-500'];
+  const BOX_COLORS = ['from-sky-500 to-blue-600', 'from-emerald-500 to-teal-600', 'from-violet-500 to-indigo-600', 'from-cyan-500 to-sky-600', 'from-teal-500 to-emerald-600', 'from-slate-500 to-slate-700'];
 
   // 활동3: 같은 기분 문구를 묶어서 (관리용)
   const feelingCounts = {};
@@ -234,10 +259,11 @@ export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen,
 
   return (
     <div className="animate-fade-in-up space-y-6">
-      <div className="flex gap-2 p-1 bg-gray-100 rounded-xl w-full max-w-md mx-auto">
+      <div className="flex gap-2 p-1 bg-gray-100 rounded-xl w-full max-w-xl mx-auto">
         {tabBtn('manage', '학생 명단')}
-        {tabBtn('activity2', '활동2')}
-        {tabBtn('activity3', '활동3')}
+        {tabBtn('activity2', a2Open ? '활동2 🔴' : '활동2')}
+        {tabBtn('activity3', feelingsOpen ? '활동3 🔴' : '활동3')}
+        {tabBtn('activity4', a4Open ? '활동4 🔴' : '활동4')}
       </div>
 
       {activeTab === 'manage' && (
@@ -293,10 +319,30 @@ export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen,
 
       {activeTab === 'activity2' && (
         <div className="space-y-6 animate-fade-in-up">
-          {phase === 'idle' ? (
+          <div className="bg-white p-5 rounded-2xl shadow-sm border border-orange-100">
+            {!a2Open ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-gray-600">[활동2 시작]을 누르면 학생 기기가 <b>친구 맞히기 화면</b>으로 바뀌어요.</p>
+                <button onClick={startActivity2} className="px-5 py-2 bg-orange-500 text-white rounded-xl text-sm font-bold shadow-md hover:bg-orange-600">▶ 활동2 시작</button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="font-bold text-orange-600">🔴 활동2 진행 중</p>
+                  <p className="text-sm text-gray-600">학생 기기는 친구 맞히기 화면이에요. 중지하면 칭찬 쓰기 화면으로 돌아가요.</p>
+                </div>
+                <button onClick={stopActivity2} className="px-5 py-2 bg-gray-800 text-white rounded-xl text-sm font-bold shadow-md hover:bg-gray-900">■ 활동2 중지</button>
+              </div>
+            )}
+          </div>
+          {!a2Open ? (
+            <div className="bg-white rounded-3xl border border-dashed border-orange-200 py-16 text-center text-gray-400 text-sm">
+              활동2를 시작하면 물음표 상자가 나타나요.
+            </div>
+          ) : phase === 'idle' ? (
             <div className="bg-white p-5 sm:p-6 rounded-3xl shadow-sm border border-orange-100">
               <h3 className="font-bold text-gray-800 text-lg mb-1 flex items-center gap-2"><IconPlay /> 활동2 · 이 친구는 누구일까요?</h3>
-              <p className="text-sm text-gray-500 mb-5">한 명씩 앞으로 나와 <b>물음표 상자</b>를 눌러요. 친구들이 써준 칭찬을 AI가 요약해서 보여줘요. 누구인지 생각해 본 뒤 <b>[정답 확인]</b>을 누르면 이름이 나타나요!</p>
+              <p className="text-sm text-gray-500 mb-5">한 명씩 앞으로 나와 <b>물음표 상자</b>를 눌러요. <b>힌트 1(강점 키워드)</b>로 먼저 추리하고, 필요하면 <b>힌트 2(AI 요약)</b>를 열어요. 근거를 들어 이야기한 뒤 <b>[정답 확인]</b>을 누르면 이름이 나타나요.</p>
               {opening && (
                 <div className="flex items-center justify-center gap-3 mb-5 py-3 bg-purple-50 rounded-2xl border border-purple-200">
                   <div className="w-6 h-6 border-4 border-purple-300 border-t-purple-600 rounded-full animate-spin"></div>
@@ -337,7 +383,7 @@ export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen,
           ) : (
             <BroadcastView
               viewerRole="teacher" broadcast={broadcast} students={studentsList} guessCount={liveGuessCount}
-              showModal={showModal} onReveal={handleReveal} onCancel={handleCancel} onNext={handleNext} revealing={revealing}
+              showModal={showModal} onReveal={handleReveal} onCancel={handleCancel} onNext={handleNext} onHint={handleHint} revealing={revealing}
             />
           )}
         </div>
@@ -346,37 +392,46 @@ export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen,
       {activeTab === 'activity3' && (
         <div className="space-y-6 animate-fade-in-up">
           <div className="bg-gradient-to-br from-pink-500 to-orange-400 text-white p-6 rounded-3xl text-center shadow-lg">
-            <p className="text-sm font-bold opacity-90 mb-2">💗 활동3 · 기분 나누기</p>
+            <p className="text-sm font-bold opacity-90 mb-2">활동3 · 기분 나누기</p>
             <h2 className="text-2xl sm:text-3xl font-black leading-snug">{FEELING_QUESTION}</h2>
           </div>
 
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-pink-100">
             {!feelingsOpen ? (
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="text-sm text-gray-600">[활동3 시작]을 누르면 학생 기기에 위 질문과 기분 쓰는 칸이 나타나요.</p>
-                <button onClick={startFeelings} className="px-5 py-2 bg-pink-500 text-white rounded-xl text-sm font-bold shadow-md hover:bg-pink-600">활동3 시작</button>
+                <p className="text-sm text-gray-600">[활동3 시작]을 누르면 학생 기기가 <b>기분 쓰기 화면</b>으로 바뀌어요.</p>
+                <button onClick={startFeelings} className="px-5 py-2 bg-pink-500 text-white rounded-xl text-sm font-bold shadow-md hover:bg-pink-600">▶ 활동3 시작</button>
               </div>
             ) : (
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="font-bold text-pink-600">💬 활동3 진행 중</p>
-                  <p className="text-sm text-gray-600">기분을 올린 친구 <b>{(feelings || []).length}</b> / {studentsList.length}명</p>
+                  <p className="font-bold text-pink-600">🔴 활동3 진행 중</p>
+                  <p className="text-sm text-gray-600">기분을 올린 친구 <b>{feelingCount}</b> / {studentsList.length}명 · 중지하면 칭찬 쓰기 화면으로 돌아가요.</p>
                 </div>
-                <button onClick={endFeelings} className="px-5 py-2 bg-gray-800 text-white rounded-xl text-sm font-bold shadow-md hover:bg-gray-900">활동3 끝내기</button>
+                <button onClick={endFeelings} className="px-5 py-2 bg-gray-800 text-white rounded-xl text-sm font-bold shadow-md hover:bg-gray-900">■ 활동3 중지</button>
               </div>
             )}
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
+            <h3 className="font-bold text-gray-800 text-sm mb-2">함께 이야기해 봐요</h3>
+            <ol className="list-decimal pl-5 space-y-1 text-sm text-gray-600">
+              <li>칭찬을 <b>들을 때</b>와 <b>해 줄 때</b>의 기분은 어떻게 달랐나요?</li>
+              <li>쑥스럽거나 부담스러운 마음이 들었다면, 그 이유는 무엇일까요?</li>
+              <li>진짜 칭찬과 듣기 좋은 말(아부)은 어떻게 다를까요?</li>
+            </ol>
           </div>
 
           {feelingsOpen && (
             <>
               <div className="bg-gradient-to-br from-yellow-50 via-pink-50 to-purple-50 rounded-3xl border border-pink-100 p-4">
-                <h3 className="text-center font-bold text-gray-700 mb-1">☁️ 우리반 친구들의 기분</h3>
+                <h3 className="text-center font-bold text-gray-700 mb-1">우리반 친구들의 기분</h3>
                 <WordCloud words={feelings} />
               </div>
               {Object.keys(feelingCounts).length > 0 && (
                 <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
                   <div className="flex items-center justify-between mb-3">
-                    <h3 className="font-bold text-gray-800 text-sm">올라온 기분 관리</h3>
+                    <h3 className="font-bold text-gray-800 text-sm">올라온 감정 단어 관리</h3>
                     <button onClick={clearFeelings} className="px-3 py-1 bg-red-50 text-red-600 rounded-lg text-xs font-bold hover:bg-red-100">모두 지우기</button>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -393,6 +448,42 @@ export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen,
           )}
         </div>
       )}
+
+      {activeTab === 'activity4' && (
+        <div className="space-y-6 animate-fade-in-up">
+          <div className="bg-slate-800 text-white p-6 rounded-3xl text-center shadow-lg">
+            <p className="text-sm font-bold opacity-80 mb-2">활동4</p>
+            <h2 className="text-2xl sm:text-3xl font-black leading-snug">내가 아는 나 vs 친구가 본 나</h2>
+            <p className="text-sm opacity-80 mt-2">내가 예상한 장점과 친구들이 찾아 준 강점을 비교하고, 돌아보며 강점 카드를 만들어요.</p>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl shadow-sm border border-indigo-100">
+            {!a4Open ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-gray-600">[활동4 시작]을 누르면 학생 기기가 <b>나의 강점 분석 화면</b>으로 바뀌어요.</p>
+                <button onClick={startActivity4} className="px-5 py-2 bg-indigo-600 text-white rounded-xl text-sm font-bold shadow-md hover:bg-indigo-700">▶ 활동4 시작</button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="font-bold text-indigo-600">🔴 활동4 진행 중</p>
+                  <p className="text-sm text-gray-600">돌아보기를 마친 친구 <b>{info.reflectionCount}</b> / {studentsList.length}명 · 중지하면 칭찬 쓰기 화면으로 돌아가요.</p>
+                </div>
+                <button onClick={stopActivity4} className="px-5 py-2 bg-gray-800 text-white rounded-xl text-sm font-bold shadow-md hover:bg-gray-900">■ 활동4 중지</button>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold text-gray-800">우리 반이 찾아 준 강점 분포</h3>
+              <span className="text-xs text-gray-400">나의 장점을 미리 고른 친구 {info.selfCount}명</span>
+            </div>
+            <ClassStrengthChart totals={info.strengthTotals} />
+            <p className="text-xs text-gray-400 mt-4">우리 반에서 가장 많이 나온 강점은 무엇인가요? 왜 그런 결과가 나왔을지 이야기해 보세요.</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -400,16 +491,21 @@ export function TeacherView({ studentsList, broadcast, guessCount, feelingsOpen,
 // =====================================================================
 // 학생 화면
 // =====================================================================
-export function StudentView({ studentsList, broadcast, guessCount, feelingsOpen, feelings, showModal, serverAction, autoLoginId }) {
+export function StudentView({ studentsList, broadcast, guessCount, activity, feelings, showModal, serverAction, autoLoginId }) {
   const [loginInfo, setLoginInfo] = useState({ grade: '', classNum: '', number: '', name: '' });
   const [loggedInStudent, setLoggedInStudent] = useState(null);
-  const [praiseText, setPraiseText] = useState('');
+  const [praise, setPraise] = useState({ strength: '', situation: '', action: '', feeling: '' });
+  const [selfStrengths, setSelfStrengths] = useState([]);
+  const [selfDraft, setSelfDraft] = useState([]);
+  const [selfSaving, setSelfSaving] = useState(false);
+  const [report, setReport] = useState(null);
+  const [reportSaving, setReportSaving] = useState(false);
   const [activeTarget, setActiveTarget] = useState(null);
   const [sending, setSending] = useState(false);
   const [written, setWritten] = useState([]);
   const [myGuess, setMyGuess] = useState(null); // { roundId, guessId }
   const [guessSending, setGuessSending] = useState(false);
-  const [myFeeling, setMyFeeling] = useState('');
+  const [myFeeling, setMyFeeling] = useState(null); // { text, words }
   const [feelingSending, setFeelingSending] = useState(false);
 
   // 미리보기/자동 입장용
@@ -426,12 +522,24 @@ export function StudentView({ studentsList, broadcast, guessCount, feelingsOpen,
       const d = await serverAction('myStatus', { writerId: stu.id });
       setWritten(d.written || []);
       setMyGuess(d.guessId ? { roundId: d.roundId, guessId: d.guessId } : null);
-      setMyFeeling(d.myFeeling || '');
+      setMyFeeling(d.myFeeling || null);
+      setSelfStrengths(d.selfStrengths || []);
+      setSelfDraft(d.selfStrengths || []);
     } catch (e) { /* 무시 */ }
   }, [serverAction]);
   useEffect(() => {
     if (loggedInStudent) syncStatus(loggedInStudent);
-  }, [loggedInStudent, broadcast.roundId, broadcast.phase, feelingsOpen, syncStatus]);
+  }, [loggedInStudent, broadcast.roundId, broadcast.phase, activity, syncStatus]);
+
+  // 활동4가 열리면 내 강점 분석 결과를 불러옵니다.
+  useEffect(() => {
+    if (activity !== 'a4' || !loggedInStudent) return undefined;
+    let stop = false;
+    (async () => {
+      try { const d = await serverAction('strengthReport', { writerId: loggedInStudent.id }); if (!stop) setReport(d); } catch (e) { /* 무시 */ }
+    })();
+    return () => { stop = true; };
+  }, [activity, loggedInStudent, serverAction]);
 
   const handleLogin = (e) => {
     e.preventDefault();
@@ -463,15 +571,33 @@ export function StudentView({ studentsList, broadcast, guessCount, feelingsOpen,
     );
   }
 
+  // ---- 활동4: 나 vs 친구가 본 나 ----
+  if (activity === 'a4') {
+    const handleSaveReflection = async (insight, pledge) => {
+      if (reportSaving) return;
+      if (checkProfanity(insight) || checkProfanity(pledge)) return showModal('경고', '바르고 고운 말을 써주세요!', true);
+      setReportSaving(true);
+      try {
+        const d = await serverAction('saveReflection', { writerId: loggedInStudent.id, insight, pledge });
+        setReport((r) => (r ? { ...r, reflection: d.reflection } : r));
+        showModal('저장 완료', '강점 카드가 만들어졌어요. 아래에서 이미지로 저장할 수 있어요.');
+      } catch (err) {
+        showModal('오류', errorMessage(err, '저장하지 못했어요. 다시 시도해주세요.'), true);
+      }
+      setReportSaving(false);
+    };
+    return <StrengthReport student={loggedInStudent} report={report} onSaveReflection={handleSaveReflection} saving={reportSaving} showModal={showModal} />;
+  }
+
   // ---- 활동3: 칭찬을 듣고 난 후 나의 기분 ----
-  if (feelingsOpen) {
+  if (activity === 'a3') {
     const handleSubmitFeeling = async (text) => {
       if (feelingSending) return;
       if (checkProfanity(text)) return showModal('경고', '바르고 고운 말을 써주세요!', true);
       setFeelingSending(true);
       try {
         const d = await serverAction('submitFeeling', { writerId: loggedInStudent.id, text });
-        setMyFeeling((d && d.text) || text);
+        setMyFeeling({ text: (d && d.text) || text, words: (d && d.words) || [] });
       } catch (err) {
         showModal('오류', errorMessage(err, '올리지 못했어요. 다시 한 번 눌러주세요.'), true);
       }
@@ -483,7 +609,16 @@ export function StudentView({ studentsList, broadcast, guessCount, feelingsOpen,
   }
 
   // ---- 방송 중: 맞히기 / 정답 발표 화면 ----
-  if (broadcast.phase !== 'idle') {
+  if (activity === 'a2' && broadcast.phase === 'idle') {
+    return (
+      <div className="flex flex-col items-center py-16 text-center animate-fade-in-up">
+        <div className="w-20 h-20 bg-orange-50 text-orange-400 rounded-full flex justify-center items-center mb-6 animate-pulse-soft text-4xl"></div>
+        <h2 className="text-2xl font-bold text-gray-800 mb-2">곧 친구 맞히기가 시작돼요!</h2>
+        <p className="text-gray-500">선생님 화면을 보고 있어 주세요. 상자가 열리면 이 화면에 나타나요.</p>
+      </div>
+    );
+  }
+  if (activity === 'a2' && broadcast.phase !== 'idle') {
     const myGuessId = myGuess && myGuess.roundId === broadcast.roundId ? myGuess.guessId : null;
     const handleSubmitGuess = async (guessId) => {
       if (guessSending) return;
@@ -507,30 +642,69 @@ export function StudentView({ studentsList, broadcast, guessCount, feelingsOpen,
 
   // ---- 방송 전: 친구들에게 칭찬 쓰기 ----
   const classmates = studentsList.filter((s) => s.id !== loggedInStudent.id);
+  const resetPraise = () => setPraise({ strength: '', situation: '', action: '', feeling: '' });
   const handleSubmitPraise = async (targetId) => {
     if (sending) return;
-    if (!praiseText.trim()) return;
-    if (checkProfanity(praiseText)) return showModal('경고', '바르고 고운 말을 써주세요!', true);
+    if (!praise.strength) return showModal('알림', '이 친구의 강점을 하나 골라 주세요.', true);
+    if (praise.action.trim().length < 5) return showModal('알림', '"어떤 행동을 봤는지" 5글자 이상 구체적으로 적어 주세요.', true);
+    if ([praise.situation, praise.action, praise.feeling].some(checkProfanity)) return showModal('경고', '바르고 고운 말을 써주세요!', true);
     setSending(true);
     try {
-      const d = await serverAction('savePraise', { writerId: loggedInStudent.id, targetId, text: praiseText.trim() });
+      const d = await serverAction('savePraise', {
+        writerId: loggedInStudent.id, targetId, strength: praise.strength,
+        situation: praise.situation.trim(), action: praise.action.trim(), feeling: praise.feeling.trim(),
+      });
       setWritten(d.written || []);
-      setPraiseText('');
+      resetPraise();
       setActiveTarget(null);
-      showModal('전송 완료', '익명으로 칭찬이 전달되었습니다!');
+      showModal('전송 완료', '익명으로 칭찬이 전달되었습니다.');
     } catch (err) {
       showModal('오류', errorMessage(err, '전송에 실패했어요. 다시 한 번 눌러주세요.'), true);
     }
     setSending(false);
   };
 
+  const toggleSelf = (id) => setSelfDraft((d) => (d.includes(id) ? d.filter((x) => x !== id) : d.length >= 3 ? d : [...d, id]));
+  const saveSelf = async () => {
+    if (selfSaving) return;
+    setSelfSaving(true);
+    try {
+      const d = await serverAction('saveSelfStrengths', { writerId: loggedInStudent.id, strengths: selfDraft });
+      setSelfStrengths(d.selfStrengths || []);
+    } catch (err) {
+      showModal('오류', errorMessage(err, '저장하지 못했어요. 다시 시도해주세요.'), true);
+    }
+    setSelfSaving(false);
+  };
+  const selfChanged = selfDraft.join(',') !== selfStrengths.join(',');
+
   return (
     <div className="animate-fade-in-up space-y-6">
       <div className="bg-white p-6 rounded-3xl shadow-sm border border-blue-100 flex justify-between items-center">
-        <h2 className="text-xl font-bold">{loggedInStudent.name} 안녕! 👋</h2>
+        <h2 className="text-xl font-bold">{loggedInStudent.name} 안녕! </h2>
         <div className="font-bold text-gray-500">작성 완료: <span className="text-blue-500">{written.length}</span>/{classmates.length}</div>
       </div>
-      <p className="text-sm text-gray-500 text-center">친구의 좋은 점을 적어주세요. 선생님이 방송을 시작하면 <b>"이 친구는 누구일까요?"</b> 퀴즈가 시작돼요!</p>
+      <div className="bg-white p-5 rounded-2xl border border-indigo-100 space-y-3">
+        <div>
+          <h3 className="font-bold text-gray-800">먼저, 내가 생각하는 나의 장점 3가지</h3>
+          <p className="text-xs text-gray-500">미리 골라 두면 나중에 친구들이 찾아 준 강점과 비교해 볼 수 있어요.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {STRENGTHS.map((x) => {
+            const on = selfDraft.includes(x.id);
+            return (
+              <button key={x.id} type="button" title={x.desc} onClick={() => toggleSelf(x.id)}
+                className={`px-4 py-2 rounded-full text-sm font-bold border transition ${on ? 'text-white border-transparent shadow' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                style={on ? { backgroundColor: x.color } : undefined}>{x.id}</button>
+            );
+          })}
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs text-gray-500">{selfDraft.length}/3 선택 {selfStrengths.length > 0 && !selfChanged && <span className="text-green-600 font-bold">· 저장됨</span>}</p>
+          <button type="button" onClick={saveSelf} disabled={selfSaving || !selfChanged || selfDraft.length === 0} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-bold disabled:opacity-40">{selfSaving ? '저장 중...' : '저장'}</button>
+        </div>
+      </div>
+      <p className="text-sm text-gray-500 text-center">친구의 강점을 찾아 <b>구체적인 행동</b>을 근거로 적어 주세요. 선생님이 활동을 시작하면 다음 단계로 넘어가요.</p>
       <div className="space-y-4">
         {classmates.map((c) => {
           const done = written.includes(c.id);
@@ -543,9 +717,37 @@ export function StudentView({ studentsList, broadcast, guessCount, feelingsOpen,
               </div>
               {active && !done && (
                 <div className="p-4 bg-blue-50/30">
-                  <textarea value={praiseText} maxLength={300} onChange={(e) => setPraiseText(e.target.value)} rows="3" placeholder="친구가 잘하는 점을 적어주세요. (이름은 쓰지 않아도 돼요)" className="w-full p-3 border rounded-xl text-sm mb-3"></textarea>
+                  <div className="space-y-3 mb-3">
+                    <div>
+                      <p className="text-xs font-bold text-gray-600 mb-2">① 이 친구의 어떤 강점이 보였나요? (하나 고르기)</p>
+                      <div className="flex flex-wrap gap-2">
+                        {STRENGTHS.map((x) => {
+                          const on = praise.strength === x.id;
+                          return (
+                            <button key={x.id} type="button" onClick={() => setPraise((p) => ({ ...p, strength: x.id }))}
+                              className={`px-3 py-1.5 rounded-full text-sm font-bold border transition ${on ? 'text-white border-transparent shadow' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                              style={on ? { backgroundColor: x.color } : undefined}>{x.id}</button>
+                          );
+                        })}
+                      </div>
+                      {praise.strength && <p className="text-[11px] text-gray-500 mt-1">{praise.strength}: {(STRENGTHS.find((x) => x.id === praise.strength) || {}).desc}</p>}
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-600">② 언제, 어떤 상황이었나요? (선택)</label>
+                      <input type="text" value={praise.situation} maxLength={100} onChange={(e) => setPraise((p) => ({ ...p, situation: e.target.value }))} placeholder="예: 모둠 활동 시간에" className="w-full mt-1 p-2.5 border rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-600">③ 그 친구가 어떤 행동을 했나요? (꼭 쓰기)</label>
+                      <textarea value={praise.action} maxLength={150} rows="2" onChange={(e) => setPraise((p) => ({ ...p, action: e.target.value }))} placeholder="예: 의견이 다른 친구의 말을 끝까지 듣고 자기 생각을 차분히 말했어요." className="w-full mt-1 p-2.5 border rounded-xl text-sm"></textarea>
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-600">④ 그 행동을 보고 내가 느낀 점 (선택)</label>
+                      <input type="text" value={praise.feeling} maxLength={100} onChange={(e) => setPraise((p) => ({ ...p, feeling: e.target.value }))} placeholder="예: 나도 본받고 싶었어요." className="w-full mt-1 p-2.5 border rounded-xl text-sm" />
+                    </div>
+                    <p className="text-[11px] text-gray-400">이름은 쓰지 않아도 돼요. 누가 썼는지는 보이지 않아요.</p>
+                  </div>
                   <div className="flex justify-end gap-2">
-                    <button onClick={() => setActiveTarget(null)} className="px-4 py-2 bg-gray-100 rounded-xl text-sm font-bold">취소</button>
+                    <button onClick={() => { setActiveTarget(null); resetPraise(); }} className="px-4 py-2 bg-gray-100 rounded-xl text-sm font-bold">취소</button>
                     <button onClick={() => handleSubmitPraise(c.id)} disabled={sending} className="px-5 py-2 bg-blue-500 text-white rounded-xl text-sm font-bold flex gap-1 items-center disabled:opacity-60"><IconSend /> {sending ? '전송 중...' : '익명 전송'}</button>
                   </div>
                 </div>

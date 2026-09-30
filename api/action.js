@@ -1,18 +1,19 @@
 import {
   redis, k, hsetObj, hgetObj, hgetallObj, getObj, setObj,
   readPublicState, readBroadcast, IDLE, passwordMatches, clientIp,
-  hasBadWord, str, maskName, splitKey,
+  hasBadWord, str, maskName, splitKey, STRENGTHS,
 } from './_lib.js';
 import { makeSummary } from './_summary.js';
+import { extractEmotions } from './_emotion.js';
 
 const TEACHER_ACTIONS = new Set([
   'verifyTeacher', 'addStudent', 'addStudentsBulk', 'removeStudent', 'teacherInfo',
   'prepareSummary', 'startBroadcast', 'revealAnswer', 'endBroadcast',
   'deleteComment', 'getAllComments', 'resetData',
-  'startFeelings', 'endFeelings', 'deleteFeeling', 'clearFeelings',
+  'startActivity2', 'stopActivity2', 'startActivity4', 'stopActivity4', 'nextHint', 'startFeelings', 'endFeelings', 'deleteFeeling', 'clearFeelings',
 ]);
 // 화면 데이터를 다시 내려줄 필요가 없는(읽기 전용) 동작
-const READ_ONLY = new Set(['verifyTeacher', 'teacherInfo', 'prepareSummary', 'getAllComments', 'myStatus']);
+const READ_ONLY = new Set(['verifyTeacher', 'teacherInfo', 'prepareSummary', 'getAllComments', 'myStatus', 'strengthReport']);
 
 const bad = (res, code, error) => res.status(code).json({ error });
 
@@ -23,6 +24,16 @@ const cleanStudent = (s) => {
   const name = str(s?.name, 20);
   if (!grade || !classNum || !number || !name) return null;
   return { id: `${grade}-${classNum}-${number}`, grade, classNum, number, name };
+};
+
+// 받는 친구에게 온 칭찬에서 강점별 개수를 셉니다. 예: [{ name: '배려', count: 3 }, ...] (많은 순)
+const strengthCountsFor = (allPraises, targetId) => {
+  const counts = {};
+  Object.entries(allPraises || {}).forEach(([field, v]) => {
+    if (splitKey(field)[1] !== targetId || !v || !STRENGTHS.includes(v.strength)) return;
+    counts[v.strength] = (counts[v.strength] || 0) + 1;
+  });
+  return Object.entries(counts).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
 };
 
 const writtenBy = (keys, writerId) =>
@@ -75,7 +86,7 @@ export default async function handler(req, res) {
         if (!id) break;
         const keys = (await redis.hkeys(k('praises'))) || [];
         const stale = keys.filter((field) => { const [w, t] = splitKey(field); return w === id || t === id; });
-        const ops = [redis.hdel(k('students'), id), redis.del(k(`comments:${id}`)), redis.hdel(k('guesses'), id), redis.hdel(k('feelings'), id), redis.srem(k('revealedIds'), id)];
+        const ops = [redis.hdel(k('students'), id), redis.del(k(`comments:${id}`)), redis.hdel(k('guesses'), id), redis.hdel(k('feelings'), id), redis.hdel(k('selfStrengths'), id), redis.hdel(k('reflections'), id), redis.srem(k('revealedIds'), id)];
         if (stale.length) ops.push(redis.hdel(k('praises'), ...stale));
         await Promise.all(ops);
         const b = await readBroadcast();
@@ -85,15 +96,25 @@ export default async function handler(req, res) {
 
       // ---------- 교사: 방송 제어 ----------
       case 'teacherInfo': {
-        const [keys, b, guessCount, revealedIds] = await Promise.all([
-          redis.hkeys(k('praises')),
+        const [allPraises, b, guessCount, revealedIds, selfAll, reflAll] = await Promise.all([
+          hgetallObj(k('praises')),
           getObj(k('broadcast')),
           redis.hlen(k('guesses')),
           redis.smembers(k('revealedIds')),
+          redis.hlen(k('selfStrengths')),
+          redis.hlen(k('reflections')),
         ]);
         const praiseCounts = {};
-        (keys || []).forEach((field) => { const t = splitKey(field)[1]; praiseCounts[t] = (praiseCounts[t] || 0) + 1; });
-        data = { praiseCounts, broadcast: b && typeof b === 'object' ? b : IDLE, guessCount: Number(guessCount || 0), revealedIds: revealedIds || [] };
+        const strengthTotals = {};
+        Object.entries(allPraises || {}).forEach(([field, v]) => {
+          const t = splitKey(field)[1];
+          praiseCounts[t] = (praiseCounts[t] || 0) + 1;
+          if (v && STRENGTHS.includes(v.strength)) strengthTotals[v.strength] = (strengthTotals[v.strength] || 0) + 1;
+        });
+        data = {
+          praiseCounts, strengthTotals, selfCount: Number(selfAll || 0), reflectionCount: Number(reflAll || 0),
+          broadcast: b && typeof b === 'object' ? b : IDLE, guessCount: Number(guessCount || 0), revealedIds: revealedIds || [],
+        };
         break;
       }
 
@@ -112,13 +133,23 @@ export default async function handler(req, res) {
       }
 
       case 'startBroadcast': {
+        if ((await getObj(k('activity'))) !== 'a2') return bad(res, 400, 'activity_closed');
         const studentId = str(payload?.studentId, 60);
         const student = await hgetObj(k('students'), studentId);
         if (!student) return bad(res, 404, 'no_student');
         const summary = maskName(str(payload?.summary, 800), student.name);
         if (!summary) return bad(res, 400, 'invalid_summary');
+        const keywords = strengthCountsFor(await hgetallObj(k('praises')), studentId).slice(0, 3);
         await redis.del(k('guesses'));
-        await setObj(k('broadcast'), { phase: 'guessing', roundId: Date.now(), targetId: studentId, summary, result: null });
+        // 힌트 1: 강점 키워드 → (교사가 [힌트 더 보기]) → 힌트 2: AI 요약. 키워드가 없으면 바로 요약부터 보여줘요.
+        await setObj(k('broadcast'), { phase: 'guessing', roundId: Date.now(), targetId: studentId, summary, keywords, hintLevel: keywords.length ? 1 : 2, result: null });
+        break;
+      }
+
+      case 'nextHint': {
+        const b = await readBroadcast();
+        if (b.phase !== 'guessing') return bad(res, 400, 'not_guessing');
+        await setObj(k('broadcast'), { ...b, hintLevel: 2 });
         break;
       }
 
@@ -160,20 +191,37 @@ export default async function handler(req, res) {
         break;
       }
 
-      // ---------- 교사: 활동3 (기분 나누기) ----------
-      // 활동3을 시작하면 진행 중이던 활동2 방송은 끝나고, 학생 화면에 기분 쓰기 창이 열려요.
+      // ---------- 교사: 활동 시작 / 중지 ----------
+      // 한 번에 하나의 활동만 진행돼요. 활동을 시작하면 학생 화면이 그 활동 화면으로 바뀌고,
+      // 중지하면 다시 활동1(칭찬 쓰기) 화면으로 돌아가요.
+      case 'startActivity2':
+        await Promise.all([setObj(k('broadcast'), IDLE), redis.del(k('guesses')), setObj(k('activity'), 'a2')]);
+        break;
+      case 'stopActivity2':
+        await Promise.all([setObj(k('broadcast'), IDLE), redis.del(k('guesses')), redis.del(k('activity'))]);
+        break;
+      case 'startActivity4':
+        await Promise.all([setObj(k('broadcast'), IDLE), redis.del(k('guesses')), setObj(k('activity'), 'a4')]);
+        break;
+      case 'stopActivity4':
+        await redis.del(k('activity'));
+        break;
       case 'startFeelings':
-        await Promise.all([setObj(k('broadcast'), IDLE), redis.del(k('guesses')), setObj(k('feelingsOpen'), true)]);
+        await Promise.all([setObj(k('broadcast'), IDLE), redis.del(k('guesses')), setObj(k('activity'), 'a3')]);
         break;
       case 'endFeelings':
-        await redis.del(k('feelingsOpen'));
+        await redis.del(k('activity'));
         break;
-      case 'deleteFeeling': {
-        const text = str(payload?.text, 40);
-        if (!text) break;
+      case 'deleteFeeling': { // 워드클라우드에서 감정 단어 하나를 지웁니다.
+        const word = str(payload?.text, 40);
+        if (!word) break;
         const all = await hgetallObj(k('feelings'));
-        const ids = Object.entries(all).filter(([, v]) => v && v.text === text).map(([id]) => id);
-        if (ids.length) await redis.hdel(k('feelings'), ...ids);
+        for (const [id, v] of Object.entries(all)) {
+          if (!v || !Array.isArray(v.words) || !v.words.includes(word)) continue;
+          const rest = v.words.filter((w) => w !== word);
+          if (rest.length) await hsetObj(k('feelings'), { [id]: { ...v, words: rest } });
+          else await redis.hdel(k('feelings'), id);
+        }
         break;
       }
       case 'clearFeelings':
@@ -184,7 +232,7 @@ export default async function handler(req, res) {
       case 'resetData': {
         const ids = (await redis.hkeys(k('students'))) || [];
         await Promise.all([
-          redis.del(k('praises')), redis.del(k('guesses')), redis.del(k('revealedIds')), redis.del(k('feelings')), redis.del(k('feelingsOpen')), setObj(k('broadcast'), IDLE),
+          redis.del(k('praises')), redis.del(k('guesses')), redis.del(k('revealedIds')), redis.del(k('feelings')), redis.del(k('selfStrengths')), redis.del(k('reflections')), redis.del(k('activity')), setObj(k('broadcast'), IDLE),
           ...ids.map((id) => redis.del(k(`comments:${id}`))),
         ]);
         break;
@@ -193,11 +241,12 @@ export default async function handler(req, res) {
       // ---------- 학생/학부모 기능 ----------
       case 'myStatus': {
         const writerId = str(payload?.writerId, 60);
-        const [keys, b, guess, myFeeling] = await Promise.all([
-          redis.hkeys(k('praises')), readBroadcast(), hgetObj(k('guesses'), writerId), hgetObj(k('feelings'), writerId),
+        const [keys, b, guess, myFeeling, mySelf] = await Promise.all([
+          redis.hkeys(k('praises')), readBroadcast(), hgetObj(k('guesses'), writerId), hgetObj(k('feelings'), writerId), hgetObj(k('selfStrengths'), writerId),
         ]);
         data = {
-          myFeeling: myFeeling && myFeeling.text ? myFeeling.text : '',
+          selfStrengths: Array.isArray(mySelf) ? mySelf : [],
+          myFeeling: myFeeling && myFeeling.text ? { text: myFeeling.text, words: myFeeling.words || [] } : null,
           written: writtenBy(keys || [], writerId),
           guessId: b.phase !== 'idle' && guess ? guess.guessId : null,
           roundId: b.roundId,
@@ -205,15 +254,61 @@ export default async function handler(req, res) {
         break;
       }
 
+      // 칭찬 쓰기: 강점 하나 + 상황 · 행동 · 느낀 점 (행동은 필수)
       case 'savePraise': {
         const writerId = str(payload?.writerId, 60);
         const targetId = str(payload?.targetId, 60);
-        const text = str(payload?.text, 300);
-        if (!writerId || !targetId || writerId === targetId || !text) return bad(res, 400, 'invalid_praise');
-        if (hasBadWord(text)) return bad(res, 400, 'profanity');
+        const strength = str(payload?.strength, 10);
+        const situation = str(payload?.situation, 100);
+        const action = str(payload?.action, 150);
+        const feeling = str(payload?.feeling, 100);
+        if (!writerId || !targetId || writerId === targetId) return bad(res, 400, 'invalid_praise');
+        if (!STRENGTHS.includes(strength) || action.length < 5) return bad(res, 400, 'invalid_praise');
+        if ([situation, action, feeling].some(hasBadWord)) return bad(res, 400, 'profanity');
+        const text = [situation, action, feeling].filter(Boolean).join(' ');
         // 같은 친구에게는 1개만 저장(중복 클릭해도 한 번만 등록)
-        await hsetObj(k('praises'), { [`${writerId}>${targetId}`]: { text } });
+        await hsetObj(k('praises'), { [`${writerId}>${targetId}`]: { text, strength, situation, action, feeling } });
         data = { written: writtenBy((await redis.hkeys(k('praises'))) || [], writerId) };
+        break;
+      }
+
+      // 활동1: 내가 생각하는 나의 장점 (최대 3개)
+      case 'saveSelfStrengths': {
+        const writerId = str(payload?.writerId, 60);
+        const list = [...new Set(Array.isArray(payload?.strengths) ? payload.strengths : [])].filter((x) => STRENGTHS.includes(x)).slice(0, 3);
+        if (!(await redis.hexists(k('students'), writerId))) return bad(res, 400, 'invalid_student');
+        await hsetObj(k('selfStrengths'), { [writerId]: list });
+        data = { selfStrengths: list };
+        break;
+      }
+
+      // 활동4: 내가 받은 칭찬의 강점 vs 내가 예상한 강점 (칭찬 원문은 내려주지 않아요)
+      case 'strengthReport': {
+        if ((await getObj(k('activity'))) !== 'a4') return bad(res, 400, 'activity_closed');
+        const writerId = str(payload?.writerId, 60);
+        const [all, self, refl] = await Promise.all([hgetallObj(k('praises')), hgetObj(k('selfStrengths'), writerId), hgetObj(k('reflections'), writerId)]);
+        const received = {};
+        STRENGTHS.forEach((x) => { received[x] = 0; });
+        let total = 0;
+        Object.entries(all).forEach(([field, v]) => {
+          if (splitKey(field)[1] !== writerId) return;
+          total += 1;
+          if (v && received[v.strength] != null) received[v.strength] += 1;
+        });
+        data = { received, total, self: Array.isArray(self) ? self : [], reflection: refl || null };
+        break;
+      }
+
+      case 'saveReflection': {
+        if ((await getObj(k('activity'))) !== 'a4') return bad(res, 400, 'activity_closed');
+        const writerId = str(payload?.writerId, 60);
+        const insight = str(payload?.insight, 120);
+        const pledge = str(payload?.pledge, 120);
+        if (!insight || !pledge) return bad(res, 400, 'invalid_reflection');
+        if (hasBadWord(insight) || hasBadWord(pledge)) return bad(res, 400, 'profanity');
+        if (!(await redis.hexists(k('students'), writerId))) return bad(res, 400, 'invalid_student');
+        await hsetObj(k('reflections'), { [writerId]: { insight, pledge } });
+        data = { reflection: { insight, pledge } };
         break;
       }
 
@@ -229,16 +324,19 @@ export default async function handler(req, res) {
         break;
       }
 
-      // 활동3: 칭찬을 듣고 난 뒤 나의 기분 쓰기 (학생 1명당 1개, 다시 쓰면 덮어써요)
+      // 활동3: 칭찬을 듣고 난 후 나의 기분 쓰기 (학생 1명당 1개, 다시 쓰면 덮어써요)
+      // 학생이 쓴 문장에서 '감정 단어'만 뽑아 저장하고, 화면에는 감정 단어만 보여줘요.
       case 'submitFeeling': {
-        if (!(await getObj(k('feelingsOpen')))) return bad(res, 400, 'feelings_closed');
+        if ((await getObj(k('activity'))) !== 'a3') return bad(res, 400, 'feelings_closed');
         const writerId = str(payload?.writerId, 60);
-        const text = str(payload?.text, 20).replace(/\s+/g, ' ');
+        const text = str(payload?.text, 100).replace(/\s+/g, ' ');
         if (!text) return bad(res, 400, 'invalid_feeling');
         if (hasBadWord(text)) return bad(res, 400, 'profanity');
         if (!(await redis.hexists(k('students'), writerId))) return bad(res, 400, 'invalid_feeling');
-        await hsetObj(k('feelings'), { [writerId]: { text } });
-        data = { text };
+        const { words } = await extractEmotions(text);
+        if (!words.length || words.some((w) => hasBadWord(w))) return bad(res, 400, 'no_emotion');
+        await hsetObj(k('feelings'), { [writerId]: { text, words } });
+        data = { text, words };
         break;
       }
 

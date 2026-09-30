@@ -250,6 +250,9 @@ export async function setObj(key, value) {
   return redis.set(key, enc(value));
 }
 
+// 강점 종류 (칭찬을 쓸 때 하나를 고르고, 활동2 힌트와 활동4 그래프에 쓰여요)
+export const STRENGTHS = ['배려', '성실', '창의', '유머', '리더십', '협동', '용기', '정직'];
+
 // 방송 상태: idle(대기) → guessing(맞히기 진행) → revealed(정답 발표)
 export const IDLE = { phase: 'idle', roundId: 0, targetId: null, summary: '', result: null };
 
@@ -261,31 +264,41 @@ export async function readBroadcast() {
 // 학생/학부모 기기에 내려주는 공개 데이터.
 // ★ 맞히기 진행 중에는 정답(targetId)과 칭찬 원문을 절대 포함하지 않습니다.
 export async function readPublicState() {
-  const [studentsMap, broadcastRaw, guessCount, feelingsOpen] = await Promise.all([
+  const [studentsMap, broadcastRaw, guessCount, activityRaw] = await Promise.all([
     hgetallObj(k('students')),
     getObj(k('broadcast')),
     redis.hlen(k('guesses')),
-    getObj(k('feelingsOpen')),
+    getObj(k('activity')),
   ]);
   const b = broadcastRaw && typeof broadcastRaw === 'object' ? broadcastRaw : IDLE;
   const revealed = b.phase === 'revealed' && b.targetId;
 
-  // 활동3(기분 나누기)가 열려 있을 때만, 작성자 정보 없이 기분 문구만 내려줍니다.
+  // 지금 진행 중인 활동: 'none'(활동1 · 칭찬 쓰기) / 'a2'(친구 맞히기) / 'a3'(기분 나누기) / 'a4'(나 vs 친구가 본 나)
+  const activity = ['a2', 'a3', 'a4'].includes(activityRaw) ? activityRaw : 'none';
+
+  // 활동3일 때만, 작성자 정보 없이 '감정 단어'만 내려줍니다. (학생이 쓴 문장 원문은 내려가지 않아요)
   let feelings = [];
-  if (feelingsOpen) {
-    feelings = Object.values(await hgetallObj(k('feelings'))).map((f) => f && f.text).filter(Boolean);
+  let feelingCount = 0;
+  if (activity === 'a3') {
+    const entries = Object.values(await hgetallObj(k('feelings'))).filter((f) => f && Array.isArray(f.words) && f.words.length);
+    feelingCount = entries.length;
+    feelings = entries.flatMap((f) => f.words);
   }
   return {
     students: Object.values(studentsMap),
     broadcast: {
       phase: b.phase,
       roundId: b.roundId,
-      summary: b.phase === 'idle' ? '' : b.summary,
+      // 힌트 단계: 1 = 강점 키워드만 / 2 = AI 요약까지. (요약은 교사가 힌트를 열기 전에는 학생 기기로 내려가지 않아요)
+      hintLevel: b.phase === 'idle' ? 0 : (b.phase === 'guessing' ? (b.hintLevel || 2) : 2),
+      keywords: b.phase === 'idle' ? [] : (b.keywords || []),
+      summary: b.phase === 'idle' || (b.phase === 'guessing' && (b.hintLevel || 2) < 2) ? '' : b.summary,
       revealedStudentId: revealed ? b.targetId : null,
-      result: revealed ? b.result : null,
+      result: null,
     },
     guessCount: Number(guessCount || 0),
-    feelingsOpen: !!feelingsOpen,
+    activity,
+    feelingCount,
     feelings,
   };
 }

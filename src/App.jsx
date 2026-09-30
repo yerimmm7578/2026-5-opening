@@ -15,7 +15,8 @@ export default function App({ preview } = {}) {
   const [studentsList, setStudentsList] = useState([]);
   const [broadcast, setBroadcast] = useState(IDLE_PUBLIC);
   const [guessCount, setGuessCount] = useState(0);
-  const [feelingsOpen, setFeelingsOpen] = useState(false);
+  const [activity, setActivity] = useState('none'); // none: 활동1(칭찬 쓰기) / a2 / a3 / a4
+  const [feelingCount, setFeelingCount] = useState(0);
   const [feelings, setFeelings] = useState([]);
 
   const lastJson = useRef('');      // 직전 데이터 (같으면 화면을 다시 그리지 않음)
@@ -29,16 +30,18 @@ export default function App({ preview } = {}) {
   const applyState = useCallback((data) => {
     if (!data || !Array.isArray(data.students)) return;
     const students = [...data.students].sort((a, b) => parseInt(a.number, 10) - parseInt(b.number, 10));
-    const fOpen = !!data.feelingsOpen;
+    const act = ['a2', 'a3', 'a4'].includes(data.activity) ? data.activity : 'none';
+    const fCount = data.feelingCount || 0;
     const fList = Array.isArray(data.feelings) ? [...data.feelings].sort() : [];
     const bc = data.broadcast || IDLE_PUBLIC;
-    const json = JSON.stringify([students, bc, data.guessCount || 0, fOpen, fList]);
+    const json = JSON.stringify([students, bc, data.guessCount || 0, act, fCount, fList]);
     if (json === lastJson.current) return;
     lastJson.current = json;
     setStudentsList(students);
     setBroadcast(bc);
     setGuessCount(data.guessCount || 0);
-    setFeelingsOpen(fOpen);
+    setActivity(act);
+    setFeelingCount(fCount);
     setFeelings(fList);
   }, []);
 
@@ -77,7 +80,7 @@ export default function App({ preview } = {}) {
     return res.data;
   }, [applyState]);
 
-  const shared = { studentsList, broadcast, guessCount, feelingsOpen, feelings, showModal, serverAction };
+  const shared = { studentsList, broadcast, guessCount, activity, feelingCount, feelings, showModal, serverAction };
 
   const renderView = () => {
     switch (viewMode) {
@@ -95,7 +98,7 @@ export default function App({ preview } = {}) {
         </div>
       )}
       <header className="bg-white/90 backdrop-blur-md shadow-sm sticky top-0 z-40 px-6 py-4 flex justify-between items-center border-b border-orange-100">
-        <h1 className={`text-2xl font-black text-orange-500 flex items-center gap-2 ${preview ? '' : 'cursor-pointer'}`} onClick={() => { if (!preview) setViewMode('home'); }}>🌻 우리반 칭찬릴레이</h1>
+        <h1 className={`text-2xl font-black text-orange-500 flex items-center gap-2 ${preview ? '' : 'cursor-pointer'}`} onClick={() => { if (!preview) setViewMode('home'); }}>우리반 강점 찾기</h1>
         <div className="flex gap-3 items-center">
           {viewMode !== 'home' && !preview && <button onClick={() => setViewMode('home')} className="px-4 py-2 bg-orange-100 text-orange-700 rounded-lg text-sm font-bold">← 처음으로</button>}
         </div>
