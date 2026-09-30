@@ -9,6 +9,6 @@ export default async function handler(req, res) {
     res.status(200).json(state);
   } catch (e) {
     console.error('state error', e);
-    res.status(500).json({ error: 'state_failed' });
+    res.status(500).json({ error: 'state_failed', detail: String(e && e.message) });
   }
 }
