@@ -261,17 +261,19 @@ export async function readBroadcast() {
 // 학생/학부모 기기에 내려주는 공개 데이터.
 // ★ 맞히기 진행 중에는 정답(targetId)과 칭찬 원문을 절대 포함하지 않습니다.
 export async function readPublicState() {
-  const [studentsMap, broadcastRaw, guessCount] = await Promise.all([
+  const [studentsMap, broadcastRaw, guessCount, feelingsOpen] = await Promise.all([
     hgetallObj(k('students')),
     getObj(k('broadcast')),
     redis.hlen(k('guesses')),
+    getObj(k('feelingsOpen')),
   ]);
   const b = broadcastRaw && typeof broadcastRaw === 'object' ? broadcastRaw : IDLE;
   const revealed = b.phase === 'revealed' && b.targetId;
 
-  let comments = [];
-  if (revealed) {
-    comments = Object.values(await hgetallObj(k(`comments:${b.targetId}`)));
+  // 활동3(기분 나누기)가 열려 있을 때만, 작성자 정보 없이 기분 문구만 내려줍니다.
+  let feelings = [];
+  if (feelingsOpen) {
+    feelings = Object.values(await hgetallObj(k('feelings'))).map((f) => f && f.text).filter(Boolean);
   }
   return {
     students: Object.values(studentsMap),
@@ -283,7 +285,8 @@ export async function readPublicState() {
       result: revealed ? b.result : null,
     },
     guessCount: Number(guessCount || 0),
-    comments,
+    feelingsOpen: !!feelingsOpen,
+    feelings,
   };
 }
 

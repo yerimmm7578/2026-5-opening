@@ -9,6 +9,7 @@ const TEACHER_ACTIONS = new Set([
   'verifyTeacher', 'addStudent', 'addStudentsBulk', 'removeStudent', 'teacherInfo',
   'prepareSummary', 'startBroadcast', 'revealAnswer', 'endBroadcast',
   'deleteComment', 'getAllComments', 'resetData',
+  'startFeelings', 'endFeelings', 'deleteFeeling', 'clearFeelings',
 ]);
 // 화면 데이터를 다시 내려줄 필요가 없는(읽기 전용) 동작
 const READ_ONLY = new Set(['verifyTeacher', 'teacherInfo', 'prepareSummary', 'getAllComments', 'myStatus']);
@@ -74,7 +75,7 @@ export default async function handler(req, res) {
         if (!id) break;
         const keys = (await redis.hkeys(k('praises'))) || [];
         const stale = keys.filter((field) => { const [w, t] = splitKey(field); return w === id || t === id; });
-        const ops = [redis.hdel(k('students'), id), redis.del(k(`comments:${id}`)), redis.hdel(k('guesses'), id), redis.srem(k('revealedIds'), id)];
+        const ops = [redis.hdel(k('students'), id), redis.del(k(`comments:${id}`)), redis.hdel(k('guesses'), id), redis.hdel(k('feelings'), id), redis.srem(k('revealedIds'), id)];
         if (stale.length) ops.push(redis.hdel(k('praises'), ...stale));
         await Promise.all(ops);
         const b = await readBroadcast();
@@ -159,11 +160,31 @@ export default async function handler(req, res) {
         break;
       }
 
+      // ---------- 교사: 활동3 (기분 나누기) ----------
+      // 활동3을 시작하면 진행 중이던 활동2 방송은 끝나고, 학생 화면에 기분 쓰기 창이 열려요.
+      case 'startFeelings':
+        await Promise.all([setObj(k('broadcast'), IDLE), redis.del(k('guesses')), setObj(k('feelingsOpen'), true)]);
+        break;
+      case 'endFeelings':
+        await redis.del(k('feelingsOpen'));
+        break;
+      case 'deleteFeeling': {
+        const text = str(payload?.text, 40);
+        if (!text) break;
+        const all = await hgetallObj(k('feelings'));
+        const ids = Object.entries(all).filter(([, v]) => v && v.text === text).map(([id]) => id);
+        if (ids.length) await redis.hdel(k('feelings'), ...ids);
+        break;
+      }
+      case 'clearFeelings':
+        await redis.del(k('feelings'));
+        break;
+
       // 리허설 후 새로 시작할 때: 칭찬·댓글·방송 상태를 지우고 학생 명단은 유지
       case 'resetData': {
         const ids = (await redis.hkeys(k('students'))) || [];
         await Promise.all([
-          redis.del(k('praises')), redis.del(k('guesses')), redis.del(k('revealedIds')), setObj(k('broadcast'), IDLE),
+          redis.del(k('praises')), redis.del(k('guesses')), redis.del(k('revealedIds')), redis.del(k('feelings')), redis.del(k('feelingsOpen')), setObj(k('broadcast'), IDLE),
           ...ids.map((id) => redis.del(k(`comments:${id}`))),
         ]);
         break;
@@ -172,10 +193,11 @@ export default async function handler(req, res) {
       // ---------- 학생/학부모 기능 ----------
       case 'myStatus': {
         const writerId = str(payload?.writerId, 60);
-        const [keys, b, guess] = await Promise.all([
-          redis.hkeys(k('praises')), readBroadcast(), hgetObj(k('guesses'), writerId),
+        const [keys, b, guess, myFeeling] = await Promise.all([
+          redis.hkeys(k('praises')), readBroadcast(), hgetObj(k('guesses'), writerId), hgetObj(k('feelings'), writerId),
         ]);
         data = {
+          myFeeling: myFeeling && myFeeling.text ? myFeeling.text : '',
           written: writtenBy(keys || [], writerId),
           guessId: b.phase !== 'idle' && guess ? guess.guessId : null,
           roundId: b.roundId,
@@ -204,6 +226,19 @@ export default async function handler(req, res) {
         if (!okW || !okG) return bad(res, 400, 'invalid_guess');
         await hsetObj(k('guesses'), { [writerId]: { guessId } });
         data = { ok: true, guessId, roundId: b.roundId };
+        break;
+      }
+
+      // 활동3: 칭찬을 듣고 난 뒤 나의 기분 쓰기 (학생 1명당 1개, 다시 쓰면 덮어써요)
+      case 'submitFeeling': {
+        if (!(await getObj(k('feelingsOpen')))) return bad(res, 400, 'feelings_closed');
+        const writerId = str(payload?.writerId, 60);
+        const text = str(payload?.text, 20).replace(/\s+/g, ' ');
+        if (!text) return bad(res, 400, 'invalid_feeling');
+        if (hasBadWord(text)) return bad(res, 400, 'profanity');
+        if (!(await redis.hexists(k('students'), writerId))) return bad(res, 400, 'invalid_feeling');
+        await hsetObj(k('feelings'), { [writerId]: { text } });
+        data = { text };
         break;
       }
 

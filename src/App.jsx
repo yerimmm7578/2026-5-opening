@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal } from './components.jsx';
-import { HomeView, TeacherView, StudentView, ParentView } from './views.jsx';
+import { HomeView, TeacherView, StudentView } from './views.jsx';
 import { fetchState, callAction } from './api.js';
 
 const IDLE_PUBLIC = { phase: 'idle', roundId: 0, summary: '', revealedStudentId: null, result: null };
@@ -15,7 +15,8 @@ export default function App({ preview } = {}) {
   const [studentsList, setStudentsList] = useState([]);
   const [broadcast, setBroadcast] = useState(IDLE_PUBLIC);
   const [guessCount, setGuessCount] = useState(0);
-  const [comments, setComments] = useState([]);
+  const [feelingsOpen, setFeelingsOpen] = useState(false);
+  const [feelings, setFeelings] = useState([]);
 
   const lastJson = useRef('');      // 직전 데이터 (같으면 화면을 다시 그리지 않음)
   const actionVersion = useRef(0);  // 내가 방금 한 동작보다 오래된 조회 결과는 버리기 위한 표시
@@ -28,15 +29,17 @@ export default function App({ preview } = {}) {
   const applyState = useCallback((data) => {
     if (!data || !Array.isArray(data.students)) return;
     const students = [...data.students].sort((a, b) => parseInt(a.number, 10) - parseInt(b.number, 10));
-    const cmts = [...(data.comments || [])].sort((a, b) => b.timestamp - a.timestamp);
+    const fOpen = !!data.feelingsOpen;
+    const fList = Array.isArray(data.feelings) ? [...data.feelings].sort() : [];
     const bc = data.broadcast || IDLE_PUBLIC;
-    const json = JSON.stringify([students, bc, data.guessCount || 0, cmts]);
+    const json = JSON.stringify([students, bc, data.guessCount || 0, fOpen, fList]);
     if (json === lastJson.current) return;
     lastJson.current = json;
     setStudentsList(students);
     setBroadcast(bc);
     setGuessCount(data.guessCount || 0);
-    setComments(cmts);
+    setFeelingsOpen(fOpen);
+    setFeelings(fList);
   }, []);
 
   const poll = useCallback(async () => {
@@ -74,13 +77,12 @@ export default function App({ preview } = {}) {
     return res.data;
   }, [applyState]);
 
-  const shared = { studentsList, broadcast, guessCount, comments, showModal, serverAction };
+  const shared = { studentsList, broadcast, guessCount, feelingsOpen, feelings, showModal, serverAction };
 
   const renderView = () => {
     switch (viewMode) {
       case 'teacher': return <TeacherView {...shared} />;
       case 'student': return <StudentView {...shared} autoLoginId={preview && preview.studentId} />;
-      case 'parent': return <ParentView {...shared} autoChildName={preview && preview.childName} />;
       default: return <HomeView setViewMode={setViewMode} showModal={showModal} />;
     }
   };

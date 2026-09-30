@@ -13,6 +13,7 @@ export const errorMessage = (err, fallback = '잠시 후 다시 시도해주세�
     case 'not_guessing': return '지금은 이름을 고를 수 있는 시간이 아니에요.';
     case 'not_revealed': return '정답이 발표된 뒤에 댓글을 쓸 수 있어요.';
     case 'no_praises': return '이 친구에게 온 칭찬이 아직 없어요.';
+    case 'feelings_closed': return '지금은 기분을 쓸 수 있는 시간이 아니에요.';
     default: return fallback;
   }
 };
