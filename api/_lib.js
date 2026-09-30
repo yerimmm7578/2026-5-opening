@@ -48,6 +48,7 @@ function getDb() {
 //  저장 위치: Firestore 컬렉션 "kv" 안에 키 하나당 문서 하나
 //   - 문자열: { value: "..." }
 //   - 해시:   { data: { 필드: "값", ... } }
+//   - 집합:   { data: { 멤버: "1", ... } }
 // ============================================================
 const COL = 'kv';
 const ref = (key) => getDb().collection(COL).doc(encodeURIComponent(String(key)));
@@ -145,6 +146,11 @@ const commands = {
     return (d && d.data) || {};
   },
 
+  async hkeys(key) {
+    const d = live(await ref(key).get());
+    return d && d.data ? Object.keys(d.data) : [];
+  },
+
   async hlen(key) {
     const d = live(await ref(key).get());
     return d && d.data ? Object.keys(d.data).length : 0;
@@ -179,6 +185,25 @@ const commands = {
       t.set(r, { type: 'hash', data });
       return next;
     });
+  },
+
+  // ---- 집합(set) 명령 ----
+  async sadd(key, ...members) {
+    const list = members.flat().map(String);
+    if (!list.length) return 0;
+    const data = {};
+    list.forEach((m) => { data[m] = '1'; });
+    await ref(key).set({ type: 'set', data }, { merge: true });
+    return list.length;
+  },
+
+  async smembers(key) {
+    const d = live(await ref(key).get());
+    return d && d.data ? Object.keys(d.data) : [];
+  },
+
+  async srem(key, ...members) {
+    return commands.hdel(key, ...members.flat());
   },
 };
 
