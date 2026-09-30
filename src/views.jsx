@@ -27,7 +27,6 @@ export function HomeView({ setViewMode, showModal }) {
   return (
     <div className="flex flex-col items-center justify-center py-8 space-y-10 animate-fade-in-up">
       <div className="text-center space-y-3">
-        <span className="px-3 py-1 bg-orange-100 text-orange-700 text-xs font-bold rounded-full">학부모 공개수업 특별 앱</span>
         <h2 className="text-3xl font-extrabold text-gray-800">따뜻한 마음을 나누는 시간</h2>
         <p className="text-gray-600">친구들의 칭찬으로 "이 친구는 누구일까요?" 맞혀봐요!</p>
       </div>
